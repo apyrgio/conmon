@@ -11,3 +11,6 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 # Upstream's `make clean` target is broken
 override_dh_auto_clean:
 	:
+
+override_dh_auto_install:
+	make install.podman PREFIX=/usr
