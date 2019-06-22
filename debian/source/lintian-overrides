@@ -1,0 +1,4 @@
+# This isn't a go package, upstream just happened to use
+# a go script in the build system.
+conmon source: missing-built-using-field-for-golang-package conmon
+conmon source: missing-xs-go-import-path-for-golang-package
