@@ -1,3 +1,12 @@
 include:
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
+
+pages:
+  stage: deploy
+  artifacts:
+    paths:
+      - public
+  script:
+    - gitlab-ci-git-buildpackage-all
+    - gitlab-ci-aptly
