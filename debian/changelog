@@ -1,5 +1,5 @@
-conmon (0.3.0-1) UNRELEASED; urgency=low
+conmon (0.3.0-1) unstable; urgency=low
 
-  * Initial release (Closes: #XXXTODO)
+  * Initial release (Closes: #930898)
 
  -- Nicolas Braud-Santoni <nicoo@debian.org>  Fri, 21 Jun 2019 22:08:54 -0700
