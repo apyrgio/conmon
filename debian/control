@@ -13,7 +13,7 @@ Vcs-Git: https://salsa.debian.org/podman-team/conmon.git
 Package: conmon
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: OCI container runtime monitor.
+Description: OCI container runtime monitor
  Conmon is a monitoring program and communication tool between a container
  manager (like podman or CRI-O) and an OCI runtime (like runc or crun) for a
  single container.
