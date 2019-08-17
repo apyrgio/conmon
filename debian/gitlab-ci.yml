@@ -2,22 +2,22 @@ include:
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
 
-stages:
-  - build
-  - test
-  - deploy
+# stages:
+#   - build
+#   - test
+#   - deploy
 
-pages:
-  stage: deploy
-  image: registry.salsa.debian.org/salsa-ci-team/ci-image-git-buildpackage:latest
-  # only:
-  #   - master
-  dependencies:
-    - build
-  artifacts:
-    paths:
-      - public
-  script:
-    - cd debian/output
-    - gitlab-ci-aptly
-    - mv pages ../..
+# pages:
+#   stage: deploy
+#   image: registry.salsa.debian.org/salsa-ci-team/ci-image-git-buildpackage:latest
+#   # only:
+#   #   - master
+#   dependencies:
+#     - build
+#   artifacts:
+#     paths:
+#       - public
+#   script:
+#     - cd debian/output
+#     - gitlab-ci-aptly
+#     - mv pages ../..
