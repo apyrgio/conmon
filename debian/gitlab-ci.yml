@@ -5,22 +5,14 @@ include:
 variables:
   SALSA_CI_DISABLE_APTLY: 0
 
-# stages:
-#   - build
-#   - test
-#   - deploy
-
-# pages:
-#   stage: deploy
-#   image: registry.salsa.debian.org/salsa-ci-team/ci-image-git-buildpackage:latest
-#   # only:
-#   #   - master
-#   dependencies:
-#     - build
-#   artifacts:
-#     paths:
-#       - public
-#   script:
-#     - cd debian/output
-#     - gitlab-ci-aptly
-#     - mv pages ../..
+pages:
+  image: debian:testing-slim
+  # only:
+  #   - master
+  dependencies:
+    - aptly
+  artifacts:
+    paths:
+      - public
+  script:
+    - mv aptly public
