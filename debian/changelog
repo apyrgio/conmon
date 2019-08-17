@@ -1,3 +1,19 @@
+conmon (2.0.0-1) UNRELEASED; urgency=medium
+
+  [ Nicolas Braud-Santoni ]
+  * New upstream version 2.0.0 (2019-08-09)
+
+  * debian/copyright: Add Birger as a copyright holder for the packaging
+  * salsa.d.o: Set up Continuous Integration for the package
+
+  [ Birger Schacht ]
+  * CI: Automatically use configuration from salsa-ci-team
+  * debian/control: Set `Rules-Requires-Root` to `no`
+  * debian/rules: Make build flags work with upstream's Makefile
+  * debian/upstream: Add metadata
+
+ -- Nicolas Braud-Santoni <nicoo@debian.org>  Sat, 17 Aug 2019 12:07:04 +0200
+
 conmon (0.3.0-1) unstable; urgency=low
 
   * Initial release (Closes: #930898)
