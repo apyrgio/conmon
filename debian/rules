@@ -5,6 +5,11 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/buildflags.mk
+# Upstream's Makefile doesn't honor CPPFLAGS
+CFLAGS+=$(CPPFLAGS)
+
 %:
 	dh $@
 
