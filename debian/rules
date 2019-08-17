@@ -19,3 +19,6 @@ override_dh_auto_clean:
 
 override_dh_auto_install:
 	make install.podman DESTDIR=$(CURDIR)/debian/conmon PREFIX=/usr
+
+override_dh_installchangelogs:
+	dh_installchangelogs changelog.txt
