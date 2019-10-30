@@ -42,6 +42,7 @@
 #define CGROUP2_SUPER_MAGIC 0x63677270
 #endif
 
+static int sync_pipe_fd = -1;
 static volatile pid_t container_pid = -1;
 static volatile pid_t create_pid = -1;
 static gboolean opt_version = FALSE;
@@ -116,7 +117,7 @@ static GOptionEntry opt_entries[] = {
 	{"version", 0, 0, G_OPTION_ARG_NONE, &opt_version, "Print the version and exit", NULL},
 	{"syslog", 0, 0, G_OPTION_ARG_NONE, &opt_syslog, "Log to syslog (use with cgroupfs cgroup manager)", NULL},
 	{"log-level", 0, 0, G_OPTION_ARG_STRING, &opt_log_level, "Print debug logs based on log level", NULL},
-	{NULL}};
+	{NULL, 0, 0, 0, NULL, NULL, NULL}};
 
 #define CGROUP_ROOT "/sys/fs/cgroup"
 #define OOM_SCORE "-999"
@@ -605,7 +606,6 @@ static gboolean oom_cb_cgroup_v2(int fd, GIOCondition condition, G_GNUC_UNUSED g
 	return ret;
 }
 
-#define CONN_SOCK_BUF_SIZE 32 * 1024 /* Match the write size in CopyDetachable */
 static gboolean conn_sock_cb(int fd, GIOCondition condition, gpointer user_data)
 {
 	char buf[CONN_SOCK_BUF_SIZE];
@@ -676,7 +676,7 @@ static void resize_winsz(int height, int width)
 	ws.ws_col = width;
 	ret = ioctl(masterfd_stdout, TIOCSWINSZ, &ws);
 	if (ret == -1) {
-		nwarn("Failed to set process pty terminal size");
+		pwarn("Failed to set process pty terminal size");
 	}
 }
 
@@ -795,6 +795,11 @@ exit:
 	masterfd_stdin = console.fd;
 	masterfd_stdout = console.fd;
 
+	/* now that we've set masterfd_stdout, we can register the ctrl_cb
+	 * if we didn't set it here, we'd risk attempting to run ioctl on
+	 * a negative fd, and fail to resize the window */
+	g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
+
 	/* Clean up everything */
 	close(connfd);
 
@@ -839,7 +844,7 @@ static void container_exit_cb(G_GNUC_UNUSED GPid pid, int status, G_GNUC_UNUSED 
 	g_main_loop_quit(main_loop);
 }
 
-static void write_sync_fd(int sync_pipe_fd, int res, const char *message)
+static void write_sync_fd(int fd, int res, const char *message)
 {
 	_cleanup_free_ char *escaped_message = NULL;
 	_cleanup_free_ char *json = NULL;
@@ -854,7 +859,7 @@ static void write_sync_fd(int sync_pipe_fd, int res, const char *message)
 
 	ssize_t len;
 
-	if (sync_pipe_fd == -1)
+	if (fd == -1)
 		return;
 
 	if (message) {
@@ -865,7 +870,7 @@ static void write_sync_fd(int sync_pipe_fd, int res, const char *message)
 	}
 
 	len = strlen(json);
-	if (write_all(sync_pipe_fd, json, len) != len) {
+	if (write_all(fd, json, len) != len) {
 		pexit("Unable to send container stderr message to parent");
 	}
 }
@@ -988,7 +993,6 @@ static int setup_terminal_control_fifo()
 	int dummyfd = open(ctl_fifo_path, O_WRONLY | O_CLOEXEC);
 	if (dummyfd == -1)
 		pexit("Failed to open dummy writer for fifo");
-	g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
 
 	ninfof("terminal_ctrl_fd: %d", terminal_ctrl_fd);
 	return dummyfd;
@@ -1072,8 +1076,36 @@ static void setup_oom_handling(int pid)
 
 static void do_exit_command()
 {
+	pid_t exit_pid;
 	gchar **args;
 	size_t n_args = 0;
+
+	if (sync_pipe_fd > 0) {
+		close(sync_pipe_fd);
+		sync_pipe_fd = -1;
+	}
+
+	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
+		_pexit("Failed to reset signal for SIGCHLD");
+	}
+
+	exit_pid = fork();
+	if (exit_pid < 0) {
+		_pexit("Failed to fork");
+	}
+
+	if (exit_pid) {
+		int ret, exit_status = 0;
+
+		do
+			ret = waitpid(exit_pid, &exit_status, 0);
+		while (ret < 0 && errno == EINTR);
+
+		if (exit_status)
+			_exit(exit_status);
+
+		return;
+	}
 
 	/* Count the additional args, if any.  */
 	if (opt_exit_args)
@@ -1111,7 +1143,6 @@ int main(int argc, char *argv[])
 	int slavefd_stderr = -1;
 	char buf[BUF_SIZE];
 	int num_read;
-	int sync_pipe_fd = -1;
 	int attach_pipe_fd = -1;
 	int start_pipe_fd = -1;
 	GError *error = NULL;
@@ -1292,6 +1323,11 @@ int main(int argc, char *argv[])
 
 		masterfd_stdout = fds[0];
 		slavefd_stdout = fds[1];
+
+		/* now that we've set masterfd_stdout, we can register the ctrl_cb
+		 * if we didn't set it here, we'd risk attempting to run ioctl on
+		 * a negative fd, and fail to resize the window */
+		g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
 	}
 
 	/* We always create a stderr pipe, because that way we can capture
@@ -1557,7 +1593,7 @@ int main(int argc, char *argv[])
 	 * conmon to only send one value down this pipe, which will later be the exit code
 	 * Thus, if we are legacy and we are exec, skip this write.
 	 */
-	if (opt_api_version >= 1 || !opt_exec)
+	if ((opt_api_version >= 1 || !opt_exec) && sync_pipe_fd >= 0)
 		write_sync_fd(sync_pipe_fd, container_pid, NULL);
 
 	setup_oom_handling(container_pid);
@@ -1649,11 +1685,11 @@ int main(int argc, char *argv[])
 	}
 
 	/* Send the command exec exit code back to the parent */
-	if (opt_exec)
+	if (opt_exec && sync_pipe_fd >= 0)
 		write_sync_fd(sync_pipe_fd, exit_status, exit_message);
 
 	if (attach_symlink_dir_path != NULL && unlink(attach_symlink_dir_path) == -1 && errno != ENOENT)
 		pexit("Failed to remove symlink for attach socket directory");
 
-	return EXIT_SUCCESS;
+	return exit_status;
 }
