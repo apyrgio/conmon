@@ -1,8 +1,15 @@
-conmon (2.0.2-1) UNRELEASED; urgency=low
+conmon (2.0.2-1) unstable; urgency=low
 
   * New upstream release (2019-10-28)
 
- -- Nicolas Braud-Santoni <nicoo@debian.org>  Wed, 30 Oct 2019 11:33:35 +0100
+  * debian/control
+    + Update maintainership information
+      - Transfer maintainership to a team address
+      - Add Birger Schacht and Jamie Bliss to Uploaders
+    + Declare compliance with policy v4.4.1.
+      No change required
+
+ -- Nicolas Braud-Santoni <nicoo@debian.org>  Wed, 30 Oct 2019 12:35:53 +0100
 
 conmon (2.0.0-1) unstable; urgency=low
 
