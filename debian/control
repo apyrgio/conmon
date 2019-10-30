@@ -1,7 +1,10 @@
 Source: conmon
 Section: admin
 Priority: optional
-Maintainer: Nicolas Braud-Santoni <nicoo@debian.org>
+Maintainer: Podman Packaging Team <team+podman@tracker.debian.org>
+Uploaders: Birger Schacht <birger@rantanplan.org>,
+           Jamie Bliss <jamie@ivyleav.es>,
+           Nicolas Braud-Santoni <nicoo@debian.org>
 Build-Depends: debhelper-compat (= 12),
                golang-go,
                libglib2.0-dev, libsystemd-dev
