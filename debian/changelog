@@ -1,3 +1,11 @@
+conmon (2.0.9-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Install README.
+  * Added myself to Uploaders.
+
+ -- Dmitry Smirnov <onlyjob@debian.org>  Thu, 16 Jan 2020 20:45:49 +1100
+
 conmon (2.0.2-1) unstable; urgency=low
 
   * New upstream release (2019-10-28)
