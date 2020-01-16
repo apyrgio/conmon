@@ -57,6 +57,7 @@ static char *opt_cuuid = NULL;
 static char *opt_name = NULL;
 static char *opt_runtime_path = NULL;
 static char *opt_bundle_path = NULL;
+static char *opt_persist_path = NULL;
 static char *opt_container_pid_file = NULL;
 static char *opt_conmon_pid_file = NULL;
 static gboolean opt_systemd_cgroup = FALSE;
@@ -78,6 +79,7 @@ static char *opt_exit_command = NULL;
 static gchar **opt_exit_args = NULL;
 static gboolean opt_replace_listen_pid = FALSE;
 static char *opt_log_level = NULL;
+static char *opt_log_tag = NULL;
 static GOptionEntry opt_entries[] = {
 	{"terminal", 't', 0, G_OPTION_ARG_NONE, &opt_terminal, "Terminal", NULL},
 	{"stdin", 'i', 0, G_OPTION_ARG_NONE, &opt_stdin, "Stdin", NULL},
@@ -98,6 +100,7 @@ static GOptionEntry opt_entries[] = {
 	{"no-pivot", 0, 0, G_OPTION_ARG_NONE, &opt_no_pivot, "Do not use pivot_root", NULL},
 	{"replace-listen-pid", 0, 0, G_OPTION_ARG_NONE, &opt_replace_listen_pid, "Replace listen pid if set for oci-runtime pid", NULL},
 	{"bundle", 'b', 0, G_OPTION_ARG_STRING, &opt_bundle_path, "Bundle path", NULL},
+	{"persist-dir", '0', 0, G_OPTION_ARG_STRING, &opt_persist_path, "Persistent directory for a container that can be used for storing container data", NULL},
 	{"pidfile", 0, 0, G_OPTION_ARG_STRING, &opt_container_pid_file, "PID file (DEPRECATED)", NULL},
 	{"container-pidfile", 'p', 0, G_OPTION_ARG_STRING, &opt_container_pid_file, "Container PID file", NULL},
 	{"conmon-pidfile", 'P', 0, G_OPTION_ARG_STRING, &opt_conmon_pid_file, "Conmon daemon PID file", NULL},
@@ -117,6 +120,7 @@ static GOptionEntry opt_entries[] = {
 	{"version", 0, 0, G_OPTION_ARG_NONE, &opt_version, "Print the version and exit", NULL},
 	{"syslog", 0, 0, G_OPTION_ARG_NONE, &opt_syslog, "Log to syslog (use with cgroupfs cgroup manager)", NULL},
 	{"log-level", 0, 0, G_OPTION_ARG_STRING, &opt_log_level, "Print debug logs based on log level", NULL},
+	{"log-tag", 0, 0, G_OPTION_ARG_STRING, &opt_log_tag, "Additional tag to use for logging", NULL},
 	{NULL, 0, 0, 0, NULL, NULL, NULL}};
 
 #define CGROUP_ROOT "/sys/fs/cgroup"
@@ -142,7 +146,6 @@ static ssize_t write_all(int fd, const void *buf, size_t count)
 
 	return count;
 }
-
 
 /*
  * Returns the path for specified controller name for a pid.
@@ -290,6 +293,8 @@ static int attach_socket_fd = -1;
 static int console_socket_fd = -1;
 static int terminal_ctrl_fd = -1;
 static int inotify_fd = -1;
+static int winsz_fd_w = -1;
+static int winsz_fd_r = -1;
 
 static gboolean timed_out = FALSE;
 
@@ -505,6 +510,28 @@ static gboolean timeout_cb(G_GNUC_UNUSED gpointer user_data)
 	return G_SOURCE_REMOVE;
 }
 
+/* write the appropriate files to tell the caller there was an oom event
+ * this can be used for v1 and v2 OOMS
+ * returns 0 on success, negative value on failure
+ */
+static int write_oom_files() {
+	_cleanup_close_ int oom_fd = -1;
+	ninfo("OOM received");
+	if (opt_persist_path) {
+		_cleanup_close_ int ctr_oom_fd = -1;
+		_cleanup_free_ char *ctr_oom_file_path = g_build_filename(opt_persist_path, "oom", NULL);
+		ctr_oom_fd = open(ctr_oom_file_path, O_CREAT, 0666);
+		if (ctr_oom_fd < 0) {
+			nwarn("Failed to write oom file");
+		}
+	}
+	oom_fd = open("oom", O_CREAT, 0666);
+	if (oom_fd < 0) {
+		nwarn("Failed to write oom file");
+	}
+	return oom_fd >= 0 ? 0 : -1;
+}
+
 static gboolean oom_cb_cgroup_v1(int fd, GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
 {
 	uint64_t oom_event;
@@ -518,14 +545,10 @@ static gboolean oom_cb_cgroup_v1(int fd, GIOCondition condition, G_GNUC_UNUSED g
 		}
 
 		if (num_read > 0) {
-			_cleanup_close_ int oom_fd = -1;
 			if (num_read != sizeof(uint64_t))
 				nwarn("Failed to read full oom event from eventfd");
-			ninfo("OOM received");
-			oom_fd = open("oom", O_CREAT, 0666);
-			if (oom_fd < 0) {
-				nwarn("Failed to write oom file");
-			}
+			write_oom_files();
+
 			return G_SOURCE_CONTINUE;
 		}
 	}
@@ -568,13 +591,7 @@ static gboolean check_cgroup2_oom()
 		}
 
 		if (counter != last_counter) {
-			_cleanup_close_ int oom_fd = -1;
-
-			ninfo("OOM received");
-			oom_fd = open("oom", O_CREAT, 0666);
-			if (oom_fd < 0) {
-				nwarn("Failed to write oom file");
-			} else {
+			if (write_oom_files() == 0) {
 				last_counter = counter;
 			}
 		}
@@ -585,11 +602,12 @@ static gboolean check_cgroup2_oom()
 
 static gboolean oom_cb_cgroup_v2(int fd, GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
 {
-	struct inotify_event events[10];
+	size_t events_size = sizeof(struct inotify_event) + NAME_MAX + 1;
+	char events[events_size];
 	gboolean ret = G_SOURCE_REMOVE;
 
 	/* Drop the inotify events.  */
-	if (read(fd, &events, sizeof(events) < 0)) {
+	if (read(fd, &events, events_size) < 0) {
 		pwarn("failed to read events");
 	}
 
@@ -608,20 +626,33 @@ static gboolean oom_cb_cgroup_v2(int fd, GIOCondition condition, G_GNUC_UNUSED g
 
 static gboolean conn_sock_cb(int fd, GIOCondition condition, gpointer user_data)
 {
-	char buf[CONN_SOCK_BUF_SIZE];
-	ssize_t num_read = 0;
 	struct conn_sock_s *sock = (struct conn_sock_s *)user_data;
+	ssize_t num_read = 0;
 
 	if ((condition & G_IO_IN) != 0) {
-		num_read = read(fd, buf, CONN_SOCK_BUF_SIZE);
-		if (num_read < 0)
+		num_read = splice(fd, NULL, masterfd_stdin, NULL, 1 << 20, 0);
+		if (num_read > 0)
 			return G_SOURCE_CONTINUE;
 
-		if (num_read > 0 && masterfd_stdin >= 0) {
-			if (write_all(masterfd_stdin, buf, num_read) < 0) {
+		if (num_read < 0) {
+			if (errno != ESPIPE && errno != EINVAL) {
 				nwarn("Failed to write to container stdin");
+			} else {
+				/* Fallback to read-write.  This may lock if the consumer
+				   doesn't read all the data.  */
+				char buf[CONN_SOCK_BUF_SIZE];
+
+				num_read = read(fd, buf, CONN_SOCK_BUF_SIZE);
+				if (num_read < 0)
+					return G_SOURCE_CONTINUE;
+
+				if (num_read > 0 && masterfd_stdin >= 0) {
+					if (write_all(masterfd_stdin, buf, num_read) < 0) {
+						nwarn("Failed to write to container stdin");
+					}
+					return G_SOURCE_CONTINUE;
+				}
 			}
-			return G_SOURCE_CONTINUE;
 		}
 	}
 
@@ -681,47 +712,34 @@ static void resize_winsz(int height, int width)
 }
 
 #define CTLBUFSZ 200
-static gboolean ctrl_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
+/*
+ * read_from_ctrl_buffer reads a line (of no more than CTLBUFSZ) from an fd,
+ * and calls line_process_func. It is a generic way to handle input on an fd
+ * line_process_func should return TRUE if it succeeds, and FALSE if it fails
+ * to process the line.
+ */
+static gboolean read_from_ctrl_buffer(int fd, gboolean(*line_process_func)(char*))
 {
 	static char ctlbuf[CTLBUFSZ];
 	static int readsz = CTLBUFSZ - 1;
 	static char *readptr = ctlbuf;
 	ssize_t num_read = 0;
-	int ctl_msg_type = -1;
-	int height = -1;
-	int width = -1;
-	int ret;
 
 	num_read = read(fd, readptr, readsz);
 	if (num_read <= 0) {
-		nwarn("Failed to read from control fd");
+		nwarnf("Failed to read from fd %d", fd);
 		return G_SOURCE_CONTINUE;
 	}
 
 	readptr[num_read] = '\0';
-	ninfof("Got ctl message: %s", ctlbuf);
+	ninfof("Got ctl message: %s on fd %d", ctlbuf, fd);
 
 	char *beg = ctlbuf;
 	char *newline = strchrnul(beg, '\n');
 	/* Process each message which ends with a line */
 	while (*newline != '\0') {
-		ret = sscanf(ctlbuf, "%d %d %d\n", &ctl_msg_type, &height, &width);
-		if (ret != 3) {
-			nwarn("Failed to sscanf message");
+		if (!line_process_func(ctlbuf)) {
 			return G_SOURCE_CONTINUE;
-		}
-		ninfof("Message type: %d, Height: %d, Width: %d", ctl_msg_type, height, width);
-		switch (ctl_msg_type) {
-		// This matches what we write from container_attach.go
-		case 1:
-			resize_winsz(height, width);
-			break;
-		case 2:
-			reopen_log_files();
-			break;
-		default:
-			ninfof("Unknown message type: %d", ctl_msg_type);
-			break;
 		}
 		beg = newline + 1;
 		newline = strchrnul(beg, '\n');
@@ -751,6 +769,78 @@ static gboolean ctrl_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNU
 	}
 
 	return G_SOURCE_CONTINUE;
+}
+
+/*
+ * process_terminal_ctrl_line takes a line from the
+ * caller program (received through the terminal ctrl fd)
+ * and either writes to the winsz fd (to handle terminal resize events)
+ * or reopens log files.
+ */
+static gboolean process_terminal_ctrl_line(char* line)
+{
+	int ctl_msg_type, height, width, ret = -1;
+	_cleanup_free_ char *hw_str = NULL;
+
+	// while the height and width won't be used in this function,
+	// we want to remove them from the buffer anyway
+	ret = sscanf(line, "%d %d %d\n", &ctl_msg_type, &height, &width);
+	if (ret != 3) {
+		nwarn("Failed to sscanf message");
+		return FALSE;
+	}
+
+	ninfof("Message type: %d", ctl_msg_type);
+	switch (ctl_msg_type) {
+	case WIN_RESIZE_EVENT:
+		hw_str = g_strdup_printf("%d %d\n", height, width);
+		if (write(winsz_fd_w, hw_str, strlen(hw_str)) < 0) {
+			nwarn("Failed to write to window resizing fd. A resize event may have been dropped");
+			return FALSE;
+		}
+		break;
+	case REOPEN_LOGS_EVENT:
+		reopen_log_files();
+		break;
+	default:
+		ninfof("Unknown message type: %d", ctl_msg_type);
+		break;
+	}
+	return TRUE;
+}
+
+/*
+ * ctrl_cb is a callback for handling events directly from the caller
+ */
+static gboolean ctrl_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
+{
+	return read_from_ctrl_buffer(fd, process_terminal_ctrl_line);
+}
+
+/*
+ * process_winsz_ctrl_line processes a line passed to the winsz fd
+ * after the terminal_ctrl fd receives a winsz event.
+ * It reads a height and length, and resizes the pty with it.
+ */
+static gboolean process_winsz_ctrl_line(char * line)
+{
+	int height, width, ret = -1;
+	ret = sscanf(line, "%d %d\n", &height, &width);
+	ninfof("Height: %d, Width: %d", height, width);
+	if (ret != 2) {
+		nwarn("Failed to sscanf message");
+		return FALSE;
+	}
+	resize_winsz(height, width);
+	return TRUE;
+}
+
+/*
+ * ctrl_winsz_cb is a callback after a window resize event is sent along the winsz fd.
+ */
+static gboolean ctrl_winsz_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
+{
+	return read_from_ctrl_buffer(fd, process_winsz_ctrl_line);
 }
 
 static gboolean terminal_accept_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNUSED gpointer user_data)
@@ -795,10 +885,10 @@ exit:
 	masterfd_stdin = console.fd;
 	masterfd_stdout = console.fd;
 
-	/* now that we've set masterfd_stdout, we can register the ctrl_cb
+	/* now that we've set masterfd_stdout, we can register the ctrl_winsz_cb
 	 * if we didn't set it here, we'd risk attempting to run ioctl on
 	 * a negative fd, and fail to resize the window */
-	g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
+	g_unix_fd_add(winsz_fd_r, G_IO_IN, ctrl_winsz_cb, NULL);
 
 	/* Clean up everything */
 	close(connfd);
@@ -972,29 +1062,38 @@ static char *setup_attach_socket(void)
 	return attach_symlink_dir_path;
 }
 
+static void setup_fifo(int *fifo_r, int *fifo_w, char * filename, char* error_var_name) {
+	_cleanup_free_ char *fifo_path = g_build_filename(opt_bundle_path, filename, NULL);
+
+	if (!fifo_r || !fifo_w)
+		pexitf("setup fifo was passed a NULL pointer");
+
+	if (mkfifo(fifo_path, 0666) == -1)
+		pexitf("Failed to mkfifo at %s", fifo_path);
+
+	if ((*fifo_r = open(fifo_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)) == -1)
+		pexitf("Failed to open %s read half", error_var_name);
+
+	if ((*fifo_w = open(fifo_path, O_WRONLY | O_CLOEXEC)) == -1)
+		pexitf("Failed to open %s write half", error_var_name);
+}
+
+static void setup_console_fifo() {
+	setup_fifo(&winsz_fd_r, &winsz_fd_w, "winsz", "window resize control fifo");
+	ninfof("winsz read side: %d, winsz write side: %d", winsz_fd_r, winsz_fd_r);
+}
+
 static int setup_terminal_control_fifo()
 {
-	_cleanup_free_ char *ctl_fifo_path = g_build_filename(opt_bundle_path, "ctl", NULL);
-	ninfof("ctl fifo path: %s", ctl_fifo_path);
-
-	/* Setup fifo for reading in terminal resize and other stdio control messages */
-
-	if (mkfifo(ctl_fifo_path, 0666) == -1)
-		pexitf("Failed to mkfifo at %s", ctl_fifo_path);
-
-	terminal_ctrl_fd = open(ctl_fifo_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-	if (terminal_ctrl_fd == -1)
-		pexit("Failed to open control fifo");
-
 	/*
 	 * Open a dummy writer to prevent getting flood of POLLHUPs when
 	 * last writer closes.
 	 */
-	int dummyfd = open(ctl_fifo_path, O_WRONLY | O_CLOEXEC);
-	if (dummyfd == -1)
-		pexit("Failed to open dummy writer for fifo");
-
+	int dummyfd = -1;
+	setup_fifo(&terminal_ctrl_fd, &dummyfd, "ctl", "terminal control fifo");
 	ninfof("terminal_ctrl_fd: %d", terminal_ctrl_fd);
+	g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
+
 	return dummyfd;
 }
 
@@ -1172,7 +1271,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	set_conmon_logs(opt_log_level, opt_cid, opt_syslog);
+	set_conmon_logs(opt_log_level, opt_cid, opt_syslog, opt_log_tag);
 
 	oom_score_fd = open("/proc/self/oom_score_adj", O_WRONLY);
 	if (oom_score_fd < 0) {
@@ -1230,7 +1329,7 @@ int main(int argc, char *argv[])
 		opt_container_pid_file = default_pid_file;
 	}
 
-	configure_log_drivers(opt_log_path, opt_log_size_max, opt_cid, opt_name);
+	configure_log_drivers(opt_log_path, opt_log_size_max, opt_cid, opt_name, opt_log_tag);
 
 	start_pipe_fd = get_pipe_fd_from_env("_OCI_STARTPIPE");
 	if (start_pipe_fd > 0) {
@@ -1257,8 +1356,7 @@ int main(int argc, char *argv[])
 		if (opt_conmon_pid_file) {
 			char content[12];
 			sprintf(content, "%i", main_pid);
-			g_file_set_contents(opt_conmon_pid_file, content, strlen(content), &err);
-			if (err) {
+			if (!g_file_set_contents(opt_conmon_pid_file, content, strlen(content), &err)) {
 				nexitf("Failed to write conmon pidfile: %s", err->message);
 			}
 		}
@@ -1324,10 +1422,10 @@ int main(int argc, char *argv[])
 		masterfd_stdout = fds[0];
 		slavefd_stdout = fds[1];
 
-		/* now that we've set masterfd_stdout, we can register the ctrl_cb
+		/* now that we've set masterfd_stdout, we can register the ctrl_winsz_cb
 		 * if we didn't set it here, we'd risk attempting to run ioctl on
 		 * a negative fd, and fail to resize the window */
-		g_unix_fd_add(terminal_ctrl_fd, G_IO_IN, ctrl_cb, NULL);
+		g_unix_fd_add(winsz_fd_r, G_IO_IN, ctrl_winsz_cb, NULL);
 	}
 
 	/* We always create a stderr pipe, because that way we can capture
@@ -1409,6 +1507,20 @@ int main(int argc, char *argv[])
 	add_argv(runtime_argv, opt_cid, NULL);
 	end_argv(runtime_argv);
 
+	/* Setup endpoint for attach */
+	_cleanup_free_ char *attach_symlink_dir_path = NULL;
+	if (opt_bundle_path != NULL) {
+		attach_symlink_dir_path = setup_attach_socket();
+		dummyfd = setup_terminal_control_fifo();
+		setup_console_fifo();
+
+		if (opt_attach) {
+			ndebug("sending attach message to parent");
+			write_sync_fd(attach_pipe_fd, 0, NULL);
+			ndebug("sent attach message to parent");
+		}
+	}
+
 	sigset_t mask, oldmask;
 	if ((sigemptyset(&mask) < 0) || (sigaddset(&mask, SIGTERM) < 0) || (sigaddset(&mask, SIGQUIT) < 0) || (sigaddset(&mask, SIGINT) < 0)
 	    || sigprocmask(SIG_BLOCK, &mask, &oldmask) < 0)
@@ -1453,7 +1565,7 @@ int main(int argc, char *argv[])
 			errno = 0;
 			int lpid = strtol(listenpid, NULL, 10);
 			if (errno != 0 || lpid <= 0)
-				pexitf("Invalid LISTEN_PID %10s", listenpid);
+				pexitf("Invalid LISTEN_PID %.10s", listenpid);
 			if (opt_replace_listen_pid || lpid == getppid()) {
 				gchar *pidstr = g_strdup_printf("%d", getpid());
 				if (!pidstr)
@@ -1517,19 +1629,6 @@ int main(int argc, char *argv[])
 	if (slavefd_stderr > -1)
 		close(slavefd_stderr);
 
-	/* Setup endpoint for attach */
-	_cleanup_free_ char *attach_symlink_dir_path = NULL;
-	if (opt_bundle_path != NULL) {
-		attach_symlink_dir_path = setup_attach_socket();
-		dummyfd = setup_terminal_control_fifo();
-
-		if (opt_attach) {
-			ndebug("sending attach message to parent");
-			write_sync_fd(attach_pipe_fd, 0, NULL);
-			ndebug("sent attach message to parent");
-		}
-	}
-
 	if (csname != NULL) {
 		g_unix_fd_add(console_socket_fd, G_IO_IN, terminal_accept_cb, csname);
 		/* Process any SIGCHLD we may have missed before the signal handler was in place.  */
@@ -1576,8 +1675,7 @@ int main(int argc, char *argv[])
 		nexit("Runtime did not set up terminal");
 
 	/* Read the pid so we can wait for the process to exit */
-	g_file_get_contents(opt_container_pid_file, &contents, NULL, &err);
-	if (err) {
+	if (!g_file_get_contents(opt_container_pid_file, &contents, NULL, &err)) {
 		nwarnf("Failed to read pidfile: %s", err->message);
 		g_error_free(err);
 		exit(1);
@@ -1646,9 +1744,13 @@ int main(int argc, char *argv[])
 	const char *exit_message = NULL;
 
 	if (timed_out) {
-		if (container_pid > 0)
+		pid_t process_group = getpgid(container_pid);
+
+		if (process_group > 0)
+			kill(-process_group, SIGKILL);
+		else
 			kill(container_pid, SIGKILL);
-		exit_message = "command timed out";
+		exit_message = TIMED_OUT_MESSAGE;
 	} else {
 		exit_status = get_exit_status(container_status);
 	}
@@ -1677,8 +1779,20 @@ int main(int argc, char *argv[])
 		closedir(fdsdir);
 	}
 
+	_cleanup_free_ char *status_str = g_strdup_printf("%d", exit_status);
+
+	/* Write the exit file to container persistent directory if it is specified */
+	if (opt_persist_path) {
+		_cleanup_free_ char *ctr_exit_file_path = g_build_filename(opt_persist_path, "exit", NULL);
+		if (!g_file_set_contents(ctr_exit_file_path, status_str, -1, &err))
+			nexitf("Failed to write %s to container exit file: %s", status_str, err->message);
+	}
+
+	/*
+	 * Writing to this directory helps if a daemon process wants to monitor all container exits
+	 * using inotify.
+	 */
 	if (opt_exit_dir) {
-		_cleanup_free_ char *status_str = g_strdup_printf("%d", exit_status);
 		_cleanup_free_ char *exit_file_path = g_build_filename(opt_exit_dir, opt_cid, NULL);
 		if (!g_file_set_contents(exit_file_path, status_str, -1, &err))
 			nexitf("Failed to write %s to exit file: %s", status_str, err->message);
