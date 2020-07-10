@@ -5,6 +5,8 @@ LIBEXECDIR ?= ${PREFIX}/libexec
 GO ?= go
 PROJECT := github.com/containers/conmon
 PKG_CONFIG ?= pkg-config
+HEADERS := $(wildcard src/*.h)
+OBJS := src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o src/cli.o src/globals.o src/cgroup.o src/conn_sock.o src/oom.o src/ctrl.o src/ctr_stdio.o src/parent_pipe_fd.o src/ctr_exit.o src/runtime_args.o
 
 
 
@@ -43,31 +45,56 @@ else ifeq ($(shell $(PKG_CONFIG) --exists libsystemd && echo "0" || echo "1"), 0
 	override CFLAGS += $(shell $(PKG_CONFIG) --cflags libsystemd) -D USE_JOURNALD=0
 endif
 
-bin/conmon: src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o | bin
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+define DOCKERFILE
+	FROM alpine:latest
+	RUN apk add --update --no-cache bash make git gcc pkgconf libc-dev glib-dev glib-static
+	COPY . /go/src/$(PROJECT)
+	WORKDIR /go/src/$(PROJECT)
+	RUN make static
+endef
+export DOCKERFILE
 
-%.o: %.c
+containerized: bin
+	$(eval PODMAN ?= $(if $(shell podman -v),podman,docker))
+	echo "$$DOCKERFILE" | $(PODMAN) build --force-rm -t conmon-build -f - .
+	CTR=`$(PODMAN) create conmon-build` \
+		&& $(PODMAN) cp $$CTR:/go/src/$(PROJECT)/bin/conmon bin/conmon \
+		&& $(PODMAN) rm $$CTR
+
+static:
+	$(MAKE) git-vars bin/conmon PKG_CONFIG='$(PKG_CONFIG) --static' CFLAGS='-static' LDFLAGS='$(LDFLAGS) -s -w -static' LIBS='$(LIBS)'
+
+nixpkgs:
+	@nix run -f channel:nixpkgs-unstable nix-prefetch-git -c nix-prefetch-git \
+		--no-deepClone https://github.com/nixos/nixpkgs > nix/nixpkgs.json
+
+bin/conmon: $(OBJS) | bin
+	$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $^ $(LIBS)
+
+%.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 config: git-vars cmd/conmon-config/conmon-config.go runner/config/config.go runner/config/config_unix.go runner/config/config_windows.go
 	$(GO) build $(LDFLAGS) -tags "$(BUILDTAGS)" -o bin/config $(PROJECT)/cmd/conmon-config
 		( cd src && $(CURDIR)/bin/config )
 
-src/cmsg.o: src/cmsg.c src/cmsg.h
-
-src/utils.o: src/utils.c src/utils.h
-
-src/ctr_logging.o: src/ctr_logging.c src/ctr_logging.h src/utils.h
-
-src/conmon.o: src/conmon.c src/cmsg.h src/config.h src/utils.h src/ctr_logging.h
+test: git-vars runner/conmon_test/*.go runner/conmon/*.go
+	$(GO) test $(LDFLAGS) -tags "$(BUILDTAGS)" $(PROJECT)/runner/conmon_test/
 
 bin:
 	mkdir -p bin
 
+vendor:
+	export GO111MODULE=on \
+		$(GO) mod tidy && \
+		$(GO) mod vendor && \
+		$(GO) mod verify
+
+.PHONY: vendor
+
 .PHONY: clean
 clean:
-	rm -f bin/conmon src/*.o
-	rmdir bin
+	rm -rf bin/ src/*.o
 
 .PHONY: install install.bin install.crio install.podman podman crio
 install: install.bin
@@ -87,5 +114,6 @@ install.podman: bin/conmon
 
 .PHONY: fmt
 fmt:
-	find . '(' -name '*.h' -o -name '*.c' ')'  -exec clang-format -i {} \+
+	find . '(' -name '*.h' -o -name '*.c' ! -path './vendor/*' ')'  -exec clang-format -i {} \+
+	find . -name '*.go' ! -path './vendor/*' -exec gofmt -s -w {} \+
 	git diff --exit-code

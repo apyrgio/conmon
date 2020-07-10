@@ -51,6 +51,13 @@ static size_t name_len = 0;
 static char *container_id_full = NULL;
 static char *container_id = NULL;
 static char *container_name = NULL;
+static char *container_tag = NULL;
+static size_t container_tag_len;
+
+typedef struct {
+	int iovcnt;
+	struct iovec iov[WRITEV_BUFFER_N_IOV];
+} writev_buffer_t;
 
 static void parse_log_path(char *log_config);
 static const char *stdpipe_name(stdpipe_t pipe);
@@ -63,12 +70,13 @@ static int set_k8s_timestamp(char *buf, ssize_t buflen, const char *pipename);
 static void reopen_k8s_file(void);
 
 
-/* configures container log specific information, such as the drivers the user
+/*
+ * configures container log specific information, such as the drivers the user
  * called with and the max log size for log file types. For the log file types
  * (currently just k8s log file), it will also open the log_fd for that specific
  * log file.
  */
-void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuuid_, char *name_)
+void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuuid_, char *name_, char *tag)
 {
 	log_size_max = log_size_max_;
 	if (log_drivers == NULL)
@@ -81,6 +89,9 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
 		k8s_log_fd = open(k8s_log_path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
 		if (k8s_log_fd < 0)
 			pexit("Failed to open log file");
+
+		if (!use_journald_logging && tag)
+			nexit("k8s-file doesn't support --log-tag");
 	}
 
 	if (use_journald_logging) {
@@ -102,6 +113,10 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
 		/* Setup some sd_journal_sendv arguments that won't change */
 		container_id_full = g_strdup_printf("CONTAINER_ID_FULL=%s", cuuid);
 		container_id = g_strdup_printf("CONTAINER_ID=%s", short_cuuid);
+		if (tag) {
+			container_tag = g_strdup_printf("CONTAINER_TAG=%s", tag);
+			container_tag_len = strlen(container_tag);
+		}
 
 		/* To maintain backwards compatibility with older versions of conmon, we need to skip setting
 		 * the name value if it isn't present
@@ -114,7 +129,8 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
 	}
 }
 
-/* parse_log_path branches on log driver type the user inputted.
+/*
+ * parse_log_path branches on log driver type the user inputted.
  * log_config will either be a ':' delimited string containing:
  * <DRIVER_NAME>:<PATH_NAME> or <PATH_NAME>
  * in the case of no colon, the driver will be kubernetes-log-file,
@@ -125,6 +141,10 @@ static void parse_log_path(char *log_config)
 {
 	char *driver = strtok(log_config, ":");
 	char *path = strtok(NULL, ":");
+	if (!strcmp(driver, "off") || !strcmp(driver, "null") || !strcmp(driver, "none")) {
+		// both left false, no-op
+		return;
+	}
 	if (!strcmp(driver, JOURNALD_FILE_STRING)) {
 		use_journald_logging = TRUE;
 		return;
@@ -161,6 +181,13 @@ bool write_to_logs(stdpipe_t pipe, char *buf, ssize_t num_read)
  */
 int write_journald(int pipe, char *buf, ssize_t buflen)
 {
+	/* When using writev_buffer_append_segment, we should never approach the number of
+	 * entries necessary to flush the buffer. Therefore, the fd passed in is for /dev/null
+	 */
+	_cleanup_close_ int dev_null = open("/dev/null", O_WRONLY | O_CLOEXEC);
+	if (dev_null < 0)
+		pexit("Failed to open /dev/null");
+
 	/* Since we know the priority values for the journal (6 being log info and 3 being log err
 	 * we can set it statically here. This will also save on runtime, at the expense of needing
 	 * to be changed if this convention is changed.
@@ -182,32 +209,32 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
 		char tmp_line_end = buf[line_len];
 		buf[line_len] = '\0';
 
-		/* When using writev_buffer_append_segment here, we should never approach the number of
-		 * entries necessary to flush the buffer. Therefore, the fd passed in is -1.
-		 */
 		_cleanup_free_ char *message = g_strdup_printf("MESSAGE=%s", buf);
-		if (writev_buffer_append_segment(-1, &bufv, message, line_len + MESSAGE_EQ_LEN) < 0)
+		if (writev_buffer_append_segment(dev_null, &bufv, message, line_len + MESSAGE_EQ_LEN) < 0)
 			return -1;
 
 		/* Restore state of the buffer */
 		buf[line_len] = tmp_line_end;
 
 
-		if (writev_buffer_append_segment(-1, &bufv, container_id_full, cuuid_len + CID_FULL_EQ_LEN) < 0)
+		if (writev_buffer_append_segment(dev_null, &bufv, container_id_full, cuuid_len + CID_FULL_EQ_LEN) < 0)
 			return -1;
 
-		if (writev_buffer_append_segment(-1, &bufv, message_priority, PRIORITY_EQ_LEN) < 0)
+		if (writev_buffer_append_segment(dev_null, &bufv, message_priority, PRIORITY_EQ_LEN) < 0)
 			return -1;
 
-		if (writev_buffer_append_segment(-1, &bufv, container_id, TRUNC_ID_LEN + CID_EQ_LEN) < 0)
+		if (writev_buffer_append_segment(dev_null, &bufv, container_id, TRUNC_ID_LEN + CID_EQ_LEN) < 0)
+			return -1;
+
+		if (container_tag && writev_buffer_append_segment(dev_null, &bufv, container_tag, container_tag_len) < 0)
 			return -1;
 
 		/* only print the name if we have a name to print */
-		if (name && writev_buffer_append_segment(-1, &bufv, container_name, name_len + CID_FULL_EQ_LEN) < 0)
+		if (name && writev_buffer_append_segment(dev_null, &bufv, container_name, name_len + NAME_EQ_LEN) < 0)
 			return -1;
 
 		/* per docker journald logging format, CONTAINER_PARTIAL_MESSAGE is set to true if it's partial, but otherwise not set. */
-		if (partial && writev_buffer_append_segment(-1, &bufv, "CONTAINER_PARTIAL_MESSAGE=true", PARTIAL_MESSAGE_EQ_LEN) < 0)
+		if (partial && writev_buffer_append_segment(dev_null, &bufv, "CONTAINER_PARTIAL_MESSAGE=true", PARTIAL_MESSAGE_EQ_LEN) < 0)
 			return -1;
 
 		int err = sd_journal_sendv(bufv.iov, bufv.iovcnt);
@@ -230,7 +257,6 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
  */
 static int write_k8s_log(stdpipe_t pipe, const char *buf, ssize_t buflen)
 {
-	char tsbuf[TSBUFLEN];
 	writev_buffer_t bufv = {0};
 	static int64_t bytes_written = 0;
 	int64_t bytes_to_be_written = 0;
@@ -240,6 +266,7 @@ static int write_k8s_log(stdpipe_t pipe, const char *buf, ssize_t buflen)
 	 * There is no practical difference in the output since write(2) is
 	 * fast.
 	 */
+	char tsbuf[TSBUFLEN];
 	if (set_k8s_timestamp(tsbuf, sizeof tsbuf, stdpipe_name(pipe)))
 		/* TODO: We should handle failures much more cleanly than this. */
 		return -1;
@@ -341,14 +368,11 @@ static bool get_line_len(ptrdiff_t *line_len, const char *buf, ssize_t buflen)
 static ssize_t writev_buffer_flush(int fd, writev_buffer_t *buf)
 {
 	size_t count = 0;
-	ssize_t res;
-	struct iovec *iov;
-	int iovcnt;
-
-	iovcnt = buf->iovcnt;
-	iov = buf->iov;
+	int iovcnt = buf->iovcnt;
+	struct iovec *iov = buf->iov;
 
 	while (iovcnt > 0) {
+		ssize_t res;
 		do {
 			res = writev(fd, iov, iovcnt);
 		} while (res == -1 && errno == EINTR);
@@ -413,11 +437,9 @@ static const char *stdpipe_name(stdpipe_t pipe)
 static int set_k8s_timestamp(char *buf, ssize_t buflen, const char *pipename)
 {
 	static int tzset_called = 0;
-	struct tm tm;
+	int err = -1;
+
 	struct timespec ts;
-	char off_sign = '+';
-	int off, len, err = -1;
-        
 	if (clock_gettime(CLOCK_REALTIME, &ts) < 0) {
 		/* If CLOCK_REALTIME is not supported, we set nano seconds to 0 */
 		if (errno == EINVAL) {
@@ -432,18 +454,21 @@ static int set_k8s_timestamp(char *buf, ssize_t buflen, const char *pipename)
 		tzset_called = 1;
 	}
 
-	if (localtime_r(&ts.tv_sec, &tm) == NULL)
+	struct tm current_tm;
+	if (localtime_r(&ts.tv_sec, &current_tm) == NULL)
 		return err;
 
 
-	off = (int)tm.tm_gmtoff;
-	if (tm.tm_gmtoff < 0) {
+	char off_sign = '+';
+	int off = (int)current_tm.tm_gmtoff;
+	if (current_tm.tm_gmtoff < 0) {
 		off_sign = '-';
 		off = -off;
 	}
 
-	len = snprintf(buf, buflen, "%d-%02d-%02dT%02d:%02d:%02d.%09ld%c%02d:%02d %s ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-		       tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec, off_sign, off / 3600, (off % 3600) / 60, pipename);
+	int len = snprintf(buf, buflen, "%d-%02d-%02dT%02d:%02d:%02d.%09ld%c%02d:%02d %s ", current_tm.tm_year + 1900,
+			   current_tm.tm_mon + 1, current_tm.tm_mday, current_tm.tm_hour, current_tm.tm_min, current_tm.tm_sec, ts.tv_nsec,
+			   off_sign, off / 3600, (off % 3600) / 60, pipename);
 
 	if (len < buflen)
 		err = 0;
@@ -487,9 +512,7 @@ static void reopen_k8s_file(void)
 void sync_logs(void)
 {
 	/* Sync the logs to disk */
-	if (k8s_log_fd > 0) {
-		if (fsync(k8s_log_fd) < 0) {
+	if (k8s_log_fd > 0)
+		if (fsync(k8s_log_fd) < 0)
 			pwarn("Failed to sync log file before exit");
-		}
-	}
 }

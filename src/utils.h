@@ -9,6 +9,7 @@
 #include <glib.h>
 #include <glib-unix.h>
 #include <sys/uio.h>
+#include <string.h>
 
 /* stdpipe_t represents one of the std pipes (or NONE).
  * Sync with const in container_attach.go */
@@ -25,6 +26,7 @@ typedef enum {
 	WARN_LEVEL,
 	INFO_LEVEL,
 	DEBUG_LEVEL,
+	TRACE_LEVEL,
 } log_level_t;
 
 // Default log level is Warning, This will be configured before any logging
@@ -32,6 +34,14 @@ typedef enum {
 extern log_level_t log_level;
 extern char *log_cid;
 extern gboolean use_syslog;
+
+#define _pexit(s) \
+	do { \
+		fprintf(stderr, "[conmon:e]: %s %s\n", s, strerror(errno)); \
+		if (use_syslog) \
+			syslog(LOG_ERR, "conmon %.20s <error>: %s %s\n", log_cid, s, strerror(errno)); \
+		_exit(EXIT_FAILURE); \
+	} while (0)
 
 #define pexit(s) \
 	do { \
@@ -126,10 +136,28 @@ extern gboolean use_syslog;
 		} while (0); \
 	}
 
+#define ntrace(s) \
+	if (log_level >= TRACE_LEVEL) { \
+		do { \
+			fprintf(stderr, "[conmon:d]: %s\n", s); \
+			if (use_syslog) \
+				syslog(LOG_INFO, "conmon %.20s <ntrace>: %s\n", log_cid, s); \
+		} while (0); \
+	}
+
+#define ntracef(fmt, ...) \
+	if (log_level >= TRACE_LEVEL) { \
+		do { \
+			fprintf(stderr, "[conmon:d]: " fmt "\n", ##__VA_ARGS__); \
+			if (use_syslog) \
+				syslog(LOG_INFO, "conmon %.20s <ntrace>: " fmt " \n", log_cid, ##__VA_ARGS__); \
+		} while (0); \
+	}
+
 /* Set the log level for this call. log level defaults to warning.
    parse the string value of level_name to the appropriate log_level_t enum value
 */
-void set_conmon_logs(char *level_name, char *cid_, gboolean syslog_);
+void set_conmon_logs(char *level_name, char *cid_, gboolean syslog_, char *tag);
 
 #define _cleanup_(x) __attribute__((cleanup(x)))
 
@@ -158,6 +186,12 @@ static inline void gstring_free_cleanup(GString **string)
 		g_string_free(*string, TRUE);
 }
 
+static inline void gerror_free_cleanup(GError **err)
+{
+	if (*err)
+		g_error_free(*err);
+}
+
 static inline void strv_cleanup(char ***strv)
 {
 	if (strv)
@@ -168,15 +202,12 @@ static inline void strv_cleanup(char ***strv)
 #define _cleanup_close_ _cleanup_(closep)
 #define _cleanup_fclose_ _cleanup_(fclosep)
 #define _cleanup_gstring_ _cleanup_(gstring_free_cleanup)
+#define _cleanup_gerror_ _cleanup_(gerror_free_cleanup)
 #define _cleanup_strv_ _cleanup_(strv_cleanup)
 
 
 #define WRITEV_BUFFER_N_IOV 128
 
-typedef struct {
-	int iovcnt;
-	struct iovec iov[WRITEV_BUFFER_N_IOV];
-} writev_buffer_t;
-
+ssize_t write_all(int fd, const void *buf, size_t count);
 
 #endif /* !defined(UTILS_H) */
