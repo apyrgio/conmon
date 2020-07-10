@@ -5,6 +5,8 @@ LIBEXECDIR ?= ${PREFIX}/libexec
 GO ?= go
 PROJECT := github.com/containers/conmon
 PKG_CONFIG ?= pkg-config
+HEADERS := $(wildcard src/*.h)
+OBJS := src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o src/cli.o src/globals.o src/cgroup.o src/conn_sock.o src/oom.o src/ctrl.o src/ctr_stdio.o src/parent_pipe_fd.o src/ctr_exit.o src/runtime_args.o
 
 
 
@@ -62,26 +64,33 @@ containerized: bin
 static:
 	$(MAKE) git-vars bin/conmon PKG_CONFIG='$(PKG_CONFIG) --static' CFLAGS='-static' LDFLAGS='$(LDFLAGS) -s -w -static' LIBS='$(LIBS)'
 
-bin/conmon: src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o | bin
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+nixpkgs:
+	@nix run -f channel:nixpkgs-unstable nix-prefetch-git -c nix-prefetch-git \
+		--no-deepClone https://github.com/nixos/nixpkgs > nix/nixpkgs.json
 
-%.o: %.c
+bin/conmon: $(OBJS) | bin
+	$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $^ $(LIBS)
+
+%.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 config: git-vars cmd/conmon-config/conmon-config.go runner/config/config.go runner/config/config_unix.go runner/config/config_windows.go
 	$(GO) build $(LDFLAGS) -tags "$(BUILDTAGS)" -o bin/config $(PROJECT)/cmd/conmon-config
 		( cd src && $(CURDIR)/bin/config )
 
-src/cmsg.o: src/cmsg.c src/cmsg.h
-
-src/utils.o: src/utils.c src/utils.h
-
-src/ctr_logging.o: src/ctr_logging.c src/ctr_logging.h src/utils.h
-
-src/conmon.o: src/conmon.c src/cmsg.h src/config.h src/utils.h src/ctr_logging.h
+test: git-vars runner/conmon_test/*.go runner/conmon/*.go
+	$(GO) test $(LDFLAGS) -tags "$(BUILDTAGS)" $(PROJECT)/runner/conmon_test/
 
 bin:
 	mkdir -p bin
+
+vendor:
+	export GO111MODULE=on \
+		$(GO) mod tidy && \
+		$(GO) mod vendor && \
+		$(GO) mod verify
+
+.PHONY: vendor
 
 .PHONY: clean
 clean:
@@ -105,5 +114,6 @@ install.podman: bin/conmon
 
 .PHONY: fmt
 fmt:
-	find . '(' -name '*.h' -o -name '*.c' ')'  -exec clang-format -i {} \+
+	find . '(' -name '*.h' -o -name '*.c' ! -path './vendor/*' ')'  -exec clang-format -i {} \+
+	find . -name '*.go' ! -path './vendor/*' -exec gofmt -s -w {} \+
 	git diff --exit-code
