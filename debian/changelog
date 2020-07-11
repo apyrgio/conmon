@@ -1,6 +1,7 @@
 conmon (2.0.18-1) experimental; urgency=medium
 
-  * New upstream version 2.0.18
+  * Team upload
+  * New upstream version 2.0.18, Closes: #964858
 
  -- Reinhard Tartler <siretart@tauware.de>  Fri, 10 Jul 2020 19:59:15 -0400
 
