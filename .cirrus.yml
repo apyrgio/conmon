@@ -7,15 +7,19 @@ env:
     ####
     # File to update in home-dir with task-specific env. var values
     ENVLIB: ".bash_profile"
+    GOPATH: "/var/tmp/go"
+    PATH: "${PATH}:${GOPATH}"
+    CRIO_REPO: "https://github.com/cri-o/cri-o.git"
+    CRIO_SLUG: "github.com/cri-o/cri-o"
+    CONMON_SLUG: "github.com/containers/conmon"
+
     # Overrides default location (/tmp/cirrus) for repo clone (will become $SRC)
-    CIRRUS_WORKING_DIR: "/tmp/conmon"
+    CIRRUS_WORKING_DIR: "${GOPATH}/src/${CONMON_SLUG}"
     # Required so $ENVLIB gets loaded and /bin/sh is not used
     CIRRUS_SHELL: "/bin/bash"
     # Save a little typing (path relative to $CIRRUS_WORKING_DIR)
     SCRIPT_BASE: "./contrib/cirrus"
     PACKER_BASE: "./contrib/cirrus/packer"
-    CRIO_REPO: "https://github.com/cri-o/cri-o.git"
-    CRIO_SLUG: "github.com/cri-o/cri-o"
     # Spoof self as travis, as cirrus has the same test issues as travis does
     TRAVIS: "true"
 
@@ -63,10 +67,11 @@ timeout_in: '120m'
 # Every *_task runs in parallel in separate VMs. The name prefix only for reference
 # in WebUI, and will be followed by matrix details.  This task runs the integration
 # testing for every platform
-integration_task:
+cri-o_integration_task:
 
     depends_on:
         - 'config'
+        - 'fmt'
 
     gce_instance:
         # Generate multiple parallel tasks, covering all possible
@@ -81,6 +86,20 @@ integration_task:
             TEST_USERNS: 1
 
     setup_environment_script: '$SCRIPT_BASE/setup_environment.sh'
+    integration_test_script: '$SCRIPT_BASE/cri-o_test.sh'
+
+# this task runs the conmon integration tests
+integration_task:
+
+    depends_on:
+        - 'config'
+        - 'fmt'
+
+    gce_instance:
+        matrix:
+            # Images are generated separately, from build_images_task (below)
+            image_name: "${FEDORA_CACHE_IMAGE_NAME}"
+
     integration_test_script: '$SCRIPT_BASE/integration_test.sh'
 
 
@@ -108,8 +127,6 @@ fedora_packaging_task:
 
 # Verify calls to bin/config were saved
 config_task:
-    env:
-        GOSRC: $CIRRUS_WORKING_DIR
     # Runs within Cirrus's "community cluster"
     container:
         matrix:
@@ -121,10 +138,28 @@ config_task:
         memory: 12
 
     script:
-        - dnf install -y make glib2-devel git gcc rpm-build golang
+        - dnf install -y make glib2-devel git gcc golang
         - cd $CIRRUS_WORKING_DIR
         - GO111MODULE=on go mod init github.com/containers/conmon
         - make config
+        - ./hack/tree_status.sh
+
+# Verify code was fmt'ed properly
+fmt_task:
+    # Runs within Cirrus's "community cluster"
+    container:
+        matrix:
+               # fedora:28 doesn't have go mod by default
+               # and we should only need one check to make sure
+               # config changes were synced
+            image: "${FEDORA_CONTAINER_FQIN}"
+        cpu: 4
+        memory: 12
+
+    script:
+        - dnf install -y make glib2-devel git gcc rpm-build clang golang
+        - cd $CIRRUS_WORKING_DIR
+        - make fmt
         - ./hack/tree_status.sh
 
 # Test building of new cache-images for future PR testing, in this PR.
@@ -193,13 +228,20 @@ cache_images_task:
 static_binary_task:
     depends_on:
         - 'config'
+        - 'fmt'
     gce_instance:
-        image_name: "${FEDORA_BASE_IMAGE}"
-        cpu: 4
-        memory: 4
+        image_name: "${FEDORA_CACHE_IMAGE_NAME}"
+        cpu: 8
+        memory: 12
         disk: 200
-    script:
-        - dnf install -y podman make git gcc
-        - make containerized
+    script: |
+        set -ex
+        setenforce 0
+        growpart /dev/sda 1 || true
+        resize2fs /dev/sda1 || true
+        yum -y install podman
+        mkdir -p /nix
+        podman run --rm --privileged -ti -v /:/mnt nixos/nix cp -rfT /nix /mnt/nix
+        podman run --rm --privileged -ti -v /nix:/nix -v ${PWD}:${PWD} -w ${PWD} nixos/nix nix --print-build-logs --option cores 8 --option max-jobs 8 build --file nix/
     binaries_artifacts:
-        path: "bin/conmon"
+        path: "result/bin/conmon"

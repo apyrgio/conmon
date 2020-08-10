@@ -5,6 +5,7 @@
 log_level_t log_level = WARN_LEVEL;
 char *log_cid = NULL;
 gboolean use_syslog = FALSE;
+
 /* Set the log level for this call. log level defaults to warning.
    parse the string value of level_name to the appropriate log_level_t enum value
 */
@@ -36,4 +37,25 @@ void set_conmon_logs(char *level_name, char *cid_, gboolean syslog_, char *tag)
 	}
 	ntracef("set log level to %s", level_name);
 	nexitf("No such log level %s", level_name);
+}
+
+ssize_t write_all(int fd, const void *buf, size_t count)
+{
+	size_t remaining = count;
+	const char *p = buf;
+	ssize_t res;
+
+	while (remaining > 0) {
+		do {
+			res = write(fd, p, remaining);
+		} while (res == -1 && errno == EINTR);
+
+		if (res <= 0)
+			return -1;
+
+		remaining -= res;
+		p += res;
+	}
+
+	return count;
 }

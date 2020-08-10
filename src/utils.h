@@ -9,6 +9,7 @@
 #include <glib.h>
 #include <glib-unix.h>
 #include <sys/uio.h>
+#include <string.h>
 
 /* stdpipe_t represents one of the std pipes (or NONE).
  * Sync with const in container_attach.go */
@@ -39,6 +40,14 @@ extern gboolean use_syslog;
 		fprintf(stderr, "[conmon:e]: %s %s\n", s, strerror(errno)); \
 		if (use_syslog) \
 			syslog(LOG_ERR, "conmon %.20s <error>: %s %s\n", log_cid, s, strerror(errno)); \
+		_exit(EXIT_FAILURE); \
+	} while (0)
+
+#define _pexitf(fmt, ...) \
+	do { \
+		fprintf(stderr, "[conmon:e]: " fmt " %s\n", ##__VA_ARGS__, strerror(errno)); \
+		if (use_syslog) \
+			syslog(LOG_ERR, "conmon %.20s <error>: " fmt ": %s\n", log_cid, ##__VA_ARGS__, strerror(errno)); \
 		_exit(EXIT_FAILURE); \
 	} while (0)
 
@@ -185,6 +194,12 @@ static inline void gstring_free_cleanup(GString **string)
 		g_string_free(*string, TRUE);
 }
 
+static inline void gerror_free_cleanup(GError **err)
+{
+	if (*err)
+		g_error_free(*err);
+}
+
 static inline void strv_cleanup(char ***strv)
 {
 	if (strv)
@@ -195,15 +210,12 @@ static inline void strv_cleanup(char ***strv)
 #define _cleanup_close_ _cleanup_(closep)
 #define _cleanup_fclose_ _cleanup_(fclosep)
 #define _cleanup_gstring_ _cleanup_(gstring_free_cleanup)
+#define _cleanup_gerror_ _cleanup_(gerror_free_cleanup)
 #define _cleanup_strv_ _cleanup_(strv_cleanup)
 
 
 #define WRITEV_BUFFER_N_IOV 128
 
-typedef struct {
-	int iovcnt;
-	struct iovec iov[WRITEV_BUFFER_N_IOV];
-} writev_buffer_t;
-
+ssize_t write_all(int fd, const void *buf, size_t count);
 
 #endif /* !defined(UTILS_H) */

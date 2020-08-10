@@ -17,6 +17,10 @@ CFLAGS+=$(CPPFLAGS)
 override_dh_auto_clean:
 	:
 
+# Upstream's `make test` target doesn't work either
+override_dh_auto_test:
+	:
+
 override_dh_auto_install:
 	make install.podman DESTDIR=$(CURDIR)/debian/conmon PREFIX=/usr
 
