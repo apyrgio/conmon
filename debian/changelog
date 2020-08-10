@@ -1,3 +1,17 @@
+conmon (2.0.20-1) unstable; urgency=medium
+
+  * New upstream version 2.0.20
+  * debian/control: Add myself to uploaders
+
+ -- Reinhard Tartler <siretart@tauware.de>  Mon, 10 Aug 2020 10:13:27 -0400
+
+conmon (2.0.18-1) unstable; urgency=medium
+
+  * Team upload
+  * New upstream version 2.0.18, Closes: #964858
+
+ -- Reinhard Tartler <siretart@tauware.de>  Mon, 03 Aug 2020 12:57:11 -0400
+
 conmon (2.0.9-1) unstable; urgency=medium
 
   * New upstream release.
