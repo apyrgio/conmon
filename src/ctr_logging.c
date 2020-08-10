@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "ctr_logging.h"
+#include "cli.h"
 #include <string.h>
 
 // if the systemd development files were found, we can log to systemd
@@ -139,26 +140,49 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
  */
 static void parse_log_path(char *log_config)
 {
+	const char *delim = strchr(log_config, ':');
 	char *driver = strtok(log_config, ":");
 	char *path = strtok(NULL, ":");
+
+	if (path == NULL && driver == NULL) {
+		nexitf("log-path must not be empty");
+	}
+
+	// :none is not the same as none, nor is :journald the same as journald
+	// we check the delim here though, because we DO want to match "none" as the none driver
+	if (path == NULL && delim == log_config) {
+		path = driver;
+		driver = (char *)K8S_FILE_STRING;
+	}
+
 	if (!strcmp(driver, "off") || !strcmp(driver, "null") || !strcmp(driver, "none")) {
-		// both left false, no-op
+		// no-op, this means things like --log-driver journald --log-driver none will still log to journald.
 		return;
 	}
+
 	if (!strcmp(driver, JOURNALD_FILE_STRING)) {
 		use_journald_logging = TRUE;
 		return;
 	}
-	use_k8s_logging = TRUE;
-	// If no : was found, driver is the log path, and the driver is
-	// kubernetes-log-file, set variables appropriately
-	if (path == NULL) {
-		k8s_log_path = driver;
-	} else if (!strcmp(driver, K8S_FILE_STRING)) {
+
+	// Driver is k8s-file or empty
+	if (!strcmp(driver, K8S_FILE_STRING)) {
+		if (path == NULL) {
+			nexitf("k8s-file requires a filename");
+		}
+		use_k8s_logging = TRUE;
 		k8s_log_path = path;
-	} else {
-		nexitf("No such log driver %s", driver);
+		return;
 	}
+
+	// If no : was found, use the entire log-path as a filename to k8s-file.
+	if (path == NULL && delim == NULL) {
+		use_k8s_logging = TRUE;
+		k8s_log_path = driver;
+		return;
+	}
+
+	nexitf("No such log driver %s", driver);
 }
 
 /* write container output to all logs the user defined */
@@ -490,7 +514,7 @@ static void reopen_k8s_file(void)
 	_cleanup_free_ char *k8s_log_path_tmp = g_strdup_printf("%s.tmp", k8s_log_path);
 
 	/* Sync the logs to disk */
-	if (fsync(k8s_log_fd) < 0) {
+	if (!opt_no_sync_log && fsync(k8s_log_fd) < 0) {
 		pwarn("Failed to sync log file on reopen");
 	}
 
