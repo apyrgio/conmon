@@ -5,18 +5,25 @@ Files-Excluded:
     tools
 
 Files: *
-Copyright: 2018-2019 github.com/containers authors
+Copyright: 2018, 2019, github.com/containers authors
 License: Apache-2.0
 Comment:
  This is an unusual copyright assignment,
  but it is what the LICENSE file specifies.
 
 Files: debian/*
-Copyright: 2019 Birger Schacht <birger@rantanplan.org>
-           2019 Jamie Bliss <jamie@ivyleav.es>
-           2019 Nicolas Braud-Santoni <nicoo@debian.org>
+Copyright: 2019, Nicolas Braud-Santoni <nicoo@debian.org>
+  2019, Jamie Bliss <jamie@ivyleav.es>
+  2019, Birger Schacht <birger@rantanplan.org>
 License: Apache-2.0
 
+Files: src/cmsg.c
+  src/cmsg.h
+Copyright: 2016, SUSE LLC
+License: Apache-2.0
+Comment:
+ This is an unusual copyright assignment,
+ but it is what the LICENSE file specifies.
 
 License: Apache-2.0
  On Debian systems the full text of the Apache License 2.0 can be found in
