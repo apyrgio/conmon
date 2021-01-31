@@ -11,6 +11,8 @@ let
     config = {
       packageOverrides = pkg: {
         autogen = (static pkg.autogen);
+        e2fsprogs = (static pkg.e2fsprogs);
+        libuv = (static pkg.libuv);
         glib = (static pkg.glib).overrideAttrs(x: {
           outputs = [ "bin" "out" "dev" ];
           mesonFlags = [
@@ -30,13 +32,10 @@ let
           ];
         });
         systemd = (static pkg.systemd).overrideAttrs(x: {
+          outputs = [ "out" "dev" ];
           mesonFlags = x.mesonFlags ++ [
             "-Dstatic-libsystemd=true"
           ];
-          postFixup = ''
-            ${x.postFixup}
-            sed -ri "s;$out/(.*);$nukedRef/\1;g" $lib/lib/libsystemd.a
-          '';
         });
       };
     };
@@ -60,10 +59,10 @@ let
     doCheck = false;
     enableParallelBuilding = true;
     outputs = [ "out" ];
-    nativeBuildInputs = [ bash git pcre pkg-config which ];
+    nativeBuildInputs = [ bash gitMinimal pcre pkg-config which ];
     buildInputs = [ glibc glibc.static glib ];
     prePatch = ''
-      export CFLAGS='-static'
+      export CFLAGS='-static -pthread'
       export LDFLAGS='-s -w -static-libgcc -static'
       export EXTRA_LDFLAGS='-s -w -linkmode external -extldflags "-static -lm"'
     '';

@@ -17,18 +17,21 @@
 #include "config.h"
 #include "parent_pipe_fd.h"
 #include "ctr_exit.h"
+#include "close_fds.h"
 #include "runtime_args.h"
 
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <locale.h>
 
 int main(int argc, char *argv[])
 {
+	setlocale(LC_ALL, "");
 	_cleanup_gerror_ GError *err = NULL;
 	char buf[BUF_SIZE];
 	int num_read;
-	_cleanup_close_ int dev_null_r = -1;
-	_cleanup_close_ int dev_null_w = -1;
+	_cleanup_close_ int dev_null_r_cleanup = -1;
+	_cleanup_close_ int dev_null_w_cleanup = -1;
 	_cleanup_close_ int dummyfd = -1;
 
 	int initialize_ec = initialize_cli(argc, argv);
@@ -58,11 +61,11 @@ int main(int argc, char *argv[])
 			close(start_pipe_fd);
 	}
 
-	dev_null_r = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	dev_null_r_cleanup = dev_null_r = open("/dev/null", O_RDONLY | O_CLOEXEC);
 	if (dev_null_r < 0)
 		pexit("Failed to open /dev/null");
 
-	dev_null_w = open("/dev/null", O_WRONLY | O_CLOEXEC);
+	dev_null_w_cleanup = dev_null_w = open("/dev/null", O_WRONLY | O_CLOEXEC);
 	if (dev_null_w < 0)
 		pexit("Failed to open /dev/null");
 
@@ -89,10 +92,14 @@ int main(int argc, char *argv[])
 	/* before we fork, ensure our children will be reaped */
 	atexit(reap_children);
 
+	/* If we were passed a sd-notify socket to use, set it up now */
+	if (opt_sdnotify_socket) {
+		setup_notify_socket(opt_sdnotify_socket);
+	}
+
 	/* Environment variables */
 	sync_pipe_fd = get_pipe_fd_from_env("_OCI_SYNCPIPE");
 
-	int attach_pipe_fd = -1;
 	if (opt_attach) {
 		attach_pipe_fd = get_pipe_fd_from_env("_OCI_ATTACHPIPE");
 		if (attach_pipe_fd < 0) {
@@ -162,7 +169,8 @@ int main(int argc, char *argv[])
 		/* now that we've set mainfd_stdout, we can register the ctrl_winsz_cb
 		 * if we didn't set it here, we'd risk attempting to run ioctl on
 		 * a negative fd, and fail to resize the window */
-		g_unix_fd_add(winsz_fd_r, G_IO_IN, ctrl_winsz_cb, NULL);
+		if (winsz_fd_r >= 0)
+			g_unix_fd_add(winsz_fd_r, G_IO_IN, ctrl_winsz_cb, NULL);
 	}
 
 	/* We always create a stderr pipe, because that way we can capture
@@ -443,8 +451,9 @@ int main(int argc, char *argv[])
 	 */
 	if (timed_out && container_pid > 0) {
 		pid_t process_group = getpgid(container_pid);
-
-		if (process_group > 0)
+		/* if process_group is 1, we will end up calling
+		 *  kill(-1), which kills everything conmon is allowed to. */
+		if (process_group > 1)
 			kill(-process_group, SIGKILL);
 		else
 			kill(container_pid, SIGKILL);
@@ -458,24 +467,8 @@ int main(int argc, char *argv[])
 	 * the container runs.  Close them before we notify the container exited, so that they can be
 	 * reused immediately.
 	 */
-	DIR *fdsdir = opendir("/proc/self/fd");
-	if (fdsdir != NULL) {
-		int fd;
-		int dfd = dirfd(fdsdir);
-		struct dirent *next;
-
-		for (next = readdir(fdsdir); next; next = readdir(fdsdir)) {
-			const char *name = next->d_name;
-			if (name[0] == '.')
-				continue;
-
-			fd = strtoll(name, NULL, 10);
-			if (fd == dfd || fd == sync_pipe_fd || fd == attach_pipe_fd || fd == dev_null_r || fd == dev_null_w)
-				continue;
-			close(fd);
-		}
-		closedir(fdsdir);
-	}
+	close_other_fds();
+	close_all_readers();
 
 	_cleanup_free_ char *status_str = g_strdup_printf("%d", exit_status);
 

@@ -6,11 +6,15 @@ GO ?= go
 PROJECT := github.com/containers/conmon
 PKG_CONFIG ?= pkg-config
 HEADERS := $(wildcard src/*.h)
-OBJS := src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o src/cli.o src/globals.o src/cgroup.o src/conn_sock.o src/oom.o src/ctrl.o src/ctr_stdio.o src/parent_pipe_fd.o src/ctr_exit.o src/runtime_args.o
+OBJS := src/conmon.o src/cmsg.o src/ctr_logging.o src/utils.o src/cli.o src/globals.o src/cgroup.o src/conn_sock.o src/oom.o src/ctrl.o src/ctr_stdio.o src/parent_pipe_fd.o src/ctr_exit.o src/runtime_args.o src/close_fds.o
+DEBUGTAG ?=
+ifneq (,$(findstring enable_debug,$(DEBUGTAG)))
+	DEBUGFLAG=-g
+else
+	DEBUGFLAG=
+endif
 
-
-
-.PHONY: all git-vars
+.PHONY: all git-vars docs
 all: git-vars bin bin/conmon
 
 git-vars:
@@ -48,7 +52,7 @@ endif
 # Update nix/nixpkgs.json its latest stable commit
 .PHONY: nixpkgs
 nixpkgs:
-	@nix run -f channel:nixos-20.03 nix-prefetch-git -c nix-prefetch-git \
+	@nix run -f channel:nixos-20.09 nix-prefetch-git -c nix-prefetch-git \
 		--no-deepClone https://github.com/nixos/nixpkgs > nix/nixpkgs.json
 
 # Build statically linked binary
@@ -59,10 +63,10 @@ static:
 	cp -rfp ./result/bin/* ./bin/
 
 bin/conmon: $(OBJS) | bin
-	$(CC) $(LDFLAGS) $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) $(CFLAGS) $(DEBUGFLAG) -o $@ $^ $(LIBS)
 
 %.o: %.c $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+	$(CC) $(CFLAGS) $(DEBUGFLAG) -o $@ -c $<
 
 config: git-vars cmd/conmon-config/conmon-config.go runner/config/config.go runner/config/config_unix.go runner/config/config_windows.go
 	$(GO) build $(LDFLAGS) -tags "$(BUILDTAGS)" -o bin/config $(PROJECT)/cmd/conmon-config
@@ -80,12 +84,18 @@ vendor:
 	GO111MODULE=on $(GO) mod vendor
 	GO111MODULE=on $(GO) mod verify
 
+.PHONY: docs
+docs: install.tools
+	$(MAKE) -C docs
+
 .PHONY: clean
 clean:
 	rm -rf bin/ src/*.o
+	$(MAKE) -C docs clean
 
 .PHONY: install install.bin install.crio install.podman podman crio
-install: install.bin
+install: install.bin docs
+	$(MAKE) -C docs install
 
 podman: install.podman
 
@@ -100,8 +110,21 @@ install.crio: bin/conmon
 install.podman: bin/conmon
 	install ${SELINUXOPT} -D -m 755 bin/conmon $(DESTDIR)$(LIBEXECDIR)/podman/conmon
 
+install.tools:
+	make -C tools
+
 .PHONY: fmt
 fmt:
 	find . '(' -name '*.h' -o -name '*.c' ! -path './vendor/*' ')'  -exec clang-format -i {} \+
 	find . -name '*.go' ! -path './vendor/*' -exec gofmt -s -w {} \+
 	git diff --exit-code
+
+
+.PHONY: dbuild
+dbuild:
+	-mkdir -p bin
+	-podman rm conmon-devenv
+	podman build -t conmon-devenv:latest .
+	podman create --name conmon-devenv conmon-devenv:latest
+	podman cp conmon-devenv:/devenv/bin/conmon bin/conmon
+	@echo "for installation move conmon file to /usr/local/libexec/podman/"
