@@ -1,6 +1,8 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: conmon
 Source: https://github.com/containers/conmon
+Files-Excluded:
+    tools
 
 Files: *
 Copyright: 2018-2019 github.com/containers authors
