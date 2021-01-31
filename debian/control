@@ -8,6 +8,7 @@ Uploaders: Birger Schacht <birger@rantanplan.org>,
            Dmitry Smirnov <onlyjob@debian.org>,
            Reinhard Tartler <siretart@tauware.de>,
 Build-Depends: debhelper-compat (= 12),
+               go-md2man,
                golang-go,
                libglib2.0-dev, libsystemd-dev
 Standards-Version: 4.4.1
