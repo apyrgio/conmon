@@ -1,0 +1,76 @@
+From b033cb5dfde6de05e63408fc839f1bb641cddd85 Mon Sep 17 00:00:00 2001
+From: Mrunal Patel <mrunalp@gmail.com>
+Date: Thu, 27 May 2021 14:09:39 -0700
+Subject: Reset OOM score back to 0 for container runtime
+
+We don't want container runtime procesess to be unkillable
+so we reset oom_score_adj back to 0 before execv
+of the runtime process.
+
+Signed-off-by: Mrunal Patel <mrunalp@gmail.com>
+---
+ src/conmon.c | 4 +++-
+ src/oom.c    | 6 ++----
+ src/oom.h    | 2 +-
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/conmon.c b/src/conmon.c
+index c349d6c..c6bd9f5 100644
+--- a/src/conmon.c
++++ b/src/conmon.c
+@@ -41,7 +41,7 @@ int main(int argc, char *argv[])
+ 
+ 	process_cli();
+ 
+-	attempt_oom_adjust();
++	attempt_oom_adjust("-1000");
+ 
+ 	/* ignoring SIGPIPE prevents conmon from being spuriously killed */
+ 	signal(SIGPIPE, SIG_IGN);
+@@ -275,6 +275,8 @@ int main(int argc, char *argv[])
+ 			}
+ 		}
+ 
++		// We don't want runc to be unkillable so we reset the oom_score_adj back to 0
++		attempt_oom_adjust("0");
+ 		execv(g_ptr_array_index(runtime_argv, 0), (char **)runtime_argv->pdata);
+ 		exit(127);
+ 	}
+diff --git a/src/oom.c b/src/oom.c
+index 5791777..0041a6b 100644
+--- a/src/oom.c
++++ b/src/oom.c
+@@ -5,16 +5,14 @@
+ #include <string.h>
+ #include <unistd.h>
+ 
+-#define OOM_SCORE "-1000"
+-
+-void attempt_oom_adjust()
++void attempt_oom_adjust(const char *const oom_score)
+ {
+ 	int oom_score_fd = open("/proc/self/oom_score_adj", O_WRONLY);
+ 	if (oom_score_fd < 0) {
+ 		ndebugf("failed to open /proc/self/oom_score_adj: %s\n", strerror(errno));
+ 		return;
+ 	}
+-	if (write(oom_score_fd, OOM_SCORE, strlen(OOM_SCORE)) < 0) {
++	if (write(oom_score_fd, oom_score, strlen(oom_score)) < 0) {
+ 		ndebugf("failed to write to /proc/self/oom_score_adj: %s\n", strerror(errno));
+ 	}
+ 	close(oom_score_fd);
+diff --git a/src/oom.h b/src/oom.h
+index 28e4178..9408c3b 100644
+--- a/src/oom.h
++++ b/src/oom.h
+@@ -1,6 +1,6 @@
+ #if !defined(OOM_H)
+ #define OOM_H
+ 
+-void attempt_oom_adjust();
++void attempt_oom_adjust(const char *const oom_score);
+ 
+ #endif // OOM_H
+-- 
+2.20.1
+
