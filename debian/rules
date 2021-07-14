@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+# See debhelper(7) (uncomment to enable)
+# output every command that modifies files on the build system.
+#export DH_VERBOSE = 1
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/buildflags.mk
+# Upstream's Makefile doesn't honor CPPFLAGS
+CFLAGS+=$(CPPFLAGS)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build
+	make -C docs docs GOMD2MAN=/usr/bin/go-md2man
+
+# Upstream's `make clean` target is broken
+override_dh_auto_clean:
+	:
+
+# Upstream's `make test` target doesn't work either
+override_dh_auto_test:
+	:
+
+override_dh_auto_install:
+	make install.bin DESTDIR=$(CURDIR)/debian/conmon PREFIX=/usr
+
+override_dh_installchangelogs:
+	dh_installchangelogs changelog.txt
