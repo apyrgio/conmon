@@ -10,7 +10,9 @@ Uploaders: Birger Schacht <birger@rantanplan.org>,
 Build-Depends: debhelper-compat (= 12),
                go-md2man,
                golang-go,
-               libglib2.0-dev, libsystemd-dev
+               libglib2.0-dev,
+               libseccomp-dev,
+               libsystemd-dev,
 Standards-Version: 4.4.1
 Homepage: https://github.com/containers/conmon
 Vcs-Browser: https://salsa.debian.org/podman-team/conmon
