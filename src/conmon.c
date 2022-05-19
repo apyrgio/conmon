@@ -18,11 +18,22 @@
 #include "parent_pipe_fd.h"
 #include "ctr_exit.h"
 #include "close_fds.h"
+#include "seccomp_notify.h"
 #include "runtime_args.h"
 
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <locale.h>
+
+static void disconnect_std_streams(int dev_null_r, int dev_null_w)
+{
+	if (dup2(dev_null_r, STDIN_FILENO) < 0)
+		pexit("Failed to dup over stdin");
+	if (dup2(dev_null_w, STDOUT_FILENO) < 0)
+		pexit("Failed to dup over stdout");
+	if (dup2(dev_null_w, STDERR_FILENO) < 0)
+		pexit("Failed to dup over stderr");
+}
 
 int main(int argc, char *argv[])
 {
@@ -41,10 +52,12 @@ int main(int argc, char *argv[])
 
 	process_cli();
 
-	attempt_oom_adjust();
+	attempt_oom_adjust("-1000");
 
 	/* ignoring SIGPIPE prevents conmon from being spuriously killed */
 	signal(SIGPIPE, SIG_IGN);
+	/* Catch SIGTERM and call exit(). This causes the atexit functions to be called. */
+	signal(SIGTERM, handle_signal);
 
 	int start_pipe_fd = get_pipe_fd_from_env("_OCI_STARTPIPE");
 	if (start_pipe_fd > 0) {
@@ -111,13 +124,8 @@ int main(int argc, char *argv[])
 	/* Disconnect stdio from parent. We need to do this, because
 	   the parent is waiting for the stdout to end when the intermediate
 	   child dies */
-	if (dup2(dev_null_r, STDIN_FILENO) < 0)
-		pexit("Failed to dup over stdin");
-	if (dup2(dev_null_w, STDOUT_FILENO) < 0)
-		pexit("Failed to dup over stdout");
-	if (dup2(dev_null_w, STDERR_FILENO) < 0)
-		pexit("Failed to dup over stderr");
-
+	if (!logging_is_passthrough())
+		disconnect_std_streams(dev_null_r, dev_null_w);
 	/* Create a new session group */
 	setsid();
 
@@ -131,6 +139,7 @@ int main(int argc, char *argv[])
 	}
 
 	_cleanup_free_ char *csname = NULL;
+	_cleanup_free_ char *seccomp_listener = NULL;
 	int workerfd_stdin = -1;
 	int workerfd_stdout = -1;
 	int workerfd_stderr = -1;
@@ -165,12 +174,16 @@ int main(int argc, char *argv[])
 
 		mainfd_stdout = fds[0];
 		workerfd_stdout = fds[1];
+	}
 
-		/* now that we've set mainfd_stdout, we can register the ctrl_winsz_cb
-		 * if we didn't set it here, we'd risk attempting to run ioctl on
-		 * a negative fd, and fail to resize the window */
-		if (winsz_fd_r >= 0)
-			g_unix_fd_add(winsz_fd_r, G_IO_IN, ctrl_winsz_cb, NULL);
+	if (opt_seccomp_notify_socket != NULL) {
+#ifdef USE_SECCOMP
+		pexit("seccomp support not present");
+#else
+		if (opt_seccomp_notify_plugins == NULL)
+			pexit("seccomp notify socket specified without any plugin");
+		seccomp_listener = setup_seccomp_socket(opt_seccomp_notify_socket);
+#endif
 	}
 
 	/* We always create a stderr pipe, because that way we can capture
@@ -185,7 +198,7 @@ int main(int argc, char *argv[])
 
 	/* Setup endpoint for attach */
 	_cleanup_free_ char *attach_symlink_dir_path = NULL;
-	if (opt_bundle_path != NULL) {
+	if (opt_bundle_path != NULL && !logging_is_passthrough()) {
 		attach_symlink_dir_path = setup_attach_socket();
 		dummyfd = setup_terminal_control_fifo();
 		setup_console_fifo();
@@ -219,27 +232,28 @@ int main(int argc, char *argv[])
 		if (sigprocmask(SIG_SETMASK, &oldmask, NULL) < 0)
 			_pexit("Failed to unblock signals");
 
-		if (workerfd_stdin < 0)
-			workerfd_stdin = dev_null_r;
-		if (dup2(workerfd_stdin, STDIN_FILENO) < 0)
-			_pexit("Failed to dup over stdin");
-		if (fchmod(STDIN_FILENO, 0777) < 0)
-			nwarn("Failed to chown stdin");
+		if (!logging_is_passthrough()) {
+			if (workerfd_stdin < 0)
+				workerfd_stdin = dev_null_r;
+			if (dup2(workerfd_stdin, STDIN_FILENO) < 0)
+				_pexit("Failed to dup over stdin");
+			if (workerfd_stdin != dev_null_r && fchmod(STDIN_FILENO, 0777) < 0)
+				nwarn("Failed to chmod stdin");
 
-		if (workerfd_stdout < 0)
-			workerfd_stdout = dev_null_w;
-		if (dup2(workerfd_stdout, STDOUT_FILENO) < 0)
-			_pexit("Failed to dup over stdout");
-		if (fchmod(STDOUT_FILENO, 0777) < 0)
-			nwarn("Failed to chown stdout");
+			if (workerfd_stdout < 0)
+				workerfd_stdout = dev_null_w;
+			if (dup2(workerfd_stdout, STDOUT_FILENO) < 0)
+				_pexit("Failed to dup over stdout");
+			if (workerfd_stdout != dev_null_w && fchmod(STDOUT_FILENO, 0777) < 0)
+				nwarn("Failed to chmod stdout");
 
-		if (workerfd_stderr < 0)
-			workerfd_stderr = workerfd_stdout;
-		if (dup2(workerfd_stderr, STDERR_FILENO) < 0)
-			_pexit("Failed to dup over stderr");
-		if (fchmod(STDERR_FILENO, 0777) < 0)
-			nwarn("Failed to chown stderr");
-
+			if (workerfd_stderr < 0)
+				workerfd_stderr = workerfd_stdout;
+			if (dup2(workerfd_stderr, STDERR_FILENO) < 0)
+				_pexit("Failed to dup over stderr");
+			if (workerfd_stderr != dev_null_w && fchmod(STDERR_FILENO, 0777) < 0)
+				nwarn("Failed to chmod stderr");
+		}
 		/* If LISTEN_PID env is set, we need to set the LISTEN_PID
 		   it to the new child process */
 		char *listenpid = getenv("LISTEN_PID");
@@ -273,9 +287,14 @@ int main(int argc, char *argv[])
 			}
 		}
 
+		// We don't want runc to be unkillable so we reset the oom_score_adj back to 0
+		attempt_oom_adjust("0");
 		execv(g_ptr_array_index(runtime_argv, 0), (char **)runtime_argv->pdata);
 		exit(127);
 	}
+
+	if (logging_is_passthrough())
+		disconnect_std_streams(dev_null_r, dev_null_w);
 
 	if ((signal(SIGTERM, on_sig_exit) == SIG_ERR) || (signal(SIGQUIT, on_sig_exit) == SIG_ERR)
 	    || (signal(SIGINT, on_sig_exit) == SIG_ERR))
@@ -286,7 +305,7 @@ int main(int argc, char *argv[])
 		pexit("Failed to unblock signals");
 
 	/* Map pid to its handler.  */
-	GHashTable *pid_to_handler = g_hash_table_new(g_int_hash, g_int_equal);
+	_cleanup_hashtable_ GHashTable *pid_to_handler = g_hash_table_new(g_int_hash, g_int_equal);
 	g_hash_table_insert(pid_to_handler, (pid_t *)&create_pid, runtime_exit_cb);
 
 	/*
@@ -315,6 +334,9 @@ int main(int argc, char *argv[])
 	if (workerfd_stderr > -1)
 		close(workerfd_stderr);
 
+	if (seccomp_listener != NULL)
+		g_unix_fd_add(seccomp_socket_fd, G_IO_IN, seccomp_accept_cb, csname);
+
 	if (csname != NULL) {
 		g_unix_fd_add(console_socket_fd, G_IO_IN, terminal_accept_cb, csname);
 		/* Process any SIGCHLD we may have missed before the signal handler was in place.  */
@@ -341,19 +363,19 @@ int main(int argc, char *argv[])
 	}
 
 	if (!WIFEXITED(runtime_status) || WEXITSTATUS(runtime_status) != 0) {
-		if (sync_pipe_fd > 0) {
-			/*
-			 * Read from container stderr for any error and send it to parent
-			 * We send -1 as pid to signal to parent that create container has failed.
-			 */
-			num_read = read(mainfd_stderr, buf, BUF_SIZE - 1);
-			if (num_read > 0) {
-				buf[num_read] = '\0';
+		/*
+		 * Read from container stderr for any error and send it to parent
+		 * We send -1 as pid to signal to parent that create container has failed.
+		 */
+		num_read = read(mainfd_stderr, buf, BUF_SIZE - 1);
+		if (num_read > 0) {
+			buf[num_read] = '\0';
+			nwarnf("runtime stderr: %s", buf);
+			if (sync_pipe_fd > 0) {
 				int to_report = -1;
 				if (opt_exec && container_status > 0) {
 					to_report = -1 * container_status;
 				}
-
 				write_sync_fd(sync_pipe_fd, to_report, buf);
 			}
 		}
@@ -488,6 +510,8 @@ int main(int argc, char *argv[])
 		if (!g_file_set_contents(exit_file_path, status_str, -1, &err))
 			nexitf("Failed to write %s to exit file: %s", status_str, err->message);
 	}
+	if (seccomp_listener != NULL)
+		unlink(seccomp_listener);
 
 	/* Send the command exec exit code back to the parent */
 	if (opt_exec && sync_pipe_fd >= 0)

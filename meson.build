@@ -35,6 +35,14 @@ add_project_arguments('-Os', '-Wall', '-Werror',
 
 glib = dependency('glib-2.0')
 
+cc = meson.get_compiler('c')
+null_dep = dependency('', required : false)
+if cc.has_function('dlopen')
+  libdl = null_dep
+else
+  libdl = cc.find_library('dl')
+endif
+
 executable('conmon',
            ['src/conmon.c',
             'src/config.h',
@@ -67,9 +75,10 @@ executable('conmon',
             'src/runtime_args.c',
             'src/runtime_args.h',
             'src/utils.c',
-            'src/utils.h'],
-           dependencies : [glib],
+            'src/utils.h',
+            'src/seccomp_notify.c',
+            'src/seccomp_notify.h'],
+           dependencies : [glib, libdl],
            install : true,
            install_dir : join_paths(get_option('libexecdir'), 'podman'),
 )
-

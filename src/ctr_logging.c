@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "ctr_logging.h"
 #include "cli.h"
+#include "config.h"
 #include <string.h>
 
 // if the systemd development files were found, we can log to systemd
@@ -24,6 +25,7 @@ static inline int sd_journal_sendv(G_GNUC_UNUSED const struct iovec *iov, G_GNUC
 /* Different types of container logging */
 static gboolean use_journald_logging = FALSE;
 static gboolean use_k8s_logging = FALSE;
+static gboolean use_logging_passthrough = FALSE;
 
 /* Value the user must input for each log driver */
 static const char *const K8S_FILE_STRING = "k8s-file";
@@ -37,13 +39,22 @@ static int k8s_log_fd = -1;
 static char *k8s_log_path = NULL;
 
 /* journald log file parameters */
+// short ID length
 #define TRUNC_ID_LEN 12
+// MESSAGE=
 #define MESSAGE_EQ_LEN 8
+// PRIORITY=x
 #define PRIORITY_EQ_LEN 10
+// CONTAINER_ID_FULL=
 #define CID_FULL_EQ_LEN 18
+// CONTAINER_ID=
 #define CID_EQ_LEN 13
+// CONTAINER_NAME=
 #define NAME_EQ_LEN 15
+// CONTAINER_PARTIAL_MESSAGE=true
 #define PARTIAL_MESSAGE_EQ_LEN 30
+// SYSLOG_IDENTIFIER=
+#define SYSLOG_IDENTIFIER_EQ_LEN 18
 static char short_cuuid[TRUNC_ID_LEN + 1];
 static char *cuuid = NULL;
 static char *name = NULL;
@@ -54,6 +65,8 @@ static char *container_id = NULL;
 static char *container_name = NULL;
 static char *container_tag = NULL;
 static size_t container_tag_len;
+static char *syslog_identifier = NULL;
+static size_t syslog_identifier_len;
 
 typedef struct {
 	int iovcnt;
@@ -70,6 +83,11 @@ static ssize_t writev_buffer_flush(int fd, writev_buffer_t *buf);
 static int set_k8s_timestamp(char *buf, ssize_t buflen, const char *pipename);
 static void reopen_k8s_file(void);
 
+
+gboolean logging_is_passthrough(void)
+{
+	return use_logging_passthrough;
+}
 
 /*
  * configures container log specific information, such as the drivers the user
@@ -117,15 +135,19 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
 		if (tag) {
 			container_tag = g_strdup_printf("CONTAINER_TAG=%s", tag);
 			container_tag_len = strlen(container_tag);
-		}
 
-		/* To maintain backwards compatibility with older versions of conmon, we need to skip setting
-		 * the name value if it isn't present
-		 */
-		if (name) {
+			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", tag);
+			syslog_identifier_len = strlen(syslog_identifier);
+		} else if (name) {
 			/* save the length so we don't have to compute every sd_journal_* call */
 			name_len = strlen(name);
 			container_name = g_strdup_printf("CONTAINER_NAME=%s", name);
+
+			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", name);
+			syslog_identifier_len = name_len + SYSLOG_IDENTIFIER_EQ_LEN;
+		} else {
+			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", short_cuuid);
+			syslog_identifier_len = TRUNC_ID_LEN + SYSLOG_IDENTIFIER_EQ_LEN;
 		}
 	}
 }
@@ -157,6 +179,14 @@ static void parse_log_path(char *log_config)
 
 	if (!strcmp(driver, "off") || !strcmp(driver, "null") || !strcmp(driver, "none")) {
 		// no-op, this means things like --log-driver journald --log-driver none will still log to journald.
+		return;
+	}
+
+	if (!strcmp(driver, "passthrough")) {
+		if (isatty(STDIN_FILENO) || isatty(STDOUT_FILENO) || isatty(STDERR_FILENO))
+			nexitf("cannot use a tty with passthrough logging mode to prevent attacks via TIOCSTI");
+
+		use_logging_passthrough = TRUE;
 		return;
 	}
 
@@ -201,10 +231,19 @@ bool write_to_logs(stdpipe_t pipe, char *buf, ssize_t num_read)
 
 
 /* write to systemd journal. If the pipe is stdout, write with notice priority,
- * otherwise, write with error priority
+ * otherwise, write with error priority. Partial lines (that don't end in a newline) are buffered
+ * between invocations. A 0 buflen argument forces a buffered partial line to be flushed.
  */
 int write_journald(int pipe, char *buf, ssize_t buflen)
 {
+	static char stdout_partial_buf[STDIO_BUF_SIZE];
+	static size_t stdout_partial_buf_len = 0;
+	static char stderr_partial_buf[STDIO_BUF_SIZE];
+	static size_t stderr_partial_buf_len = 0;
+
+	char *partial_buf;
+	size_t *partial_buf_len;
+
 	/* When using writev_buffer_append_segment, we should never approach the number of
 	 * entries necessary to flush the buffer. Therefore, the fd passed in is for /dev/null
 	 */
@@ -217,15 +256,31 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
 	 * to be changed if this convention is changed.
 	 */
 	const char *message_priority = "PRIORITY=6";
-	if (pipe == STDERR_PIPE)
+	if (pipe == STDERR_PIPE) {
 		message_priority = "PRIORITY=3";
+		partial_buf = stderr_partial_buf;
+		partial_buf_len = &stderr_partial_buf_len;
+	} else {
+		partial_buf = stdout_partial_buf;
+		partial_buf_len = &stdout_partial_buf_len;
+	}
 
 	ptrdiff_t line_len = 0;
 
-	while (buflen > 0) {
+	while (buflen > 0 || *partial_buf_len > 0) {
 		writev_buffer_t bufv = {0};
 
-		bool partial = get_line_len(&line_len, buf, buflen);
+		bool partial = buflen == 0 || get_line_len(&line_len, buf, buflen);
+
+		/* If this is a partial line, and we have capacity to buffer it, buffer it and return.
+		 * The capacity of the partial_buf is one less than its size so that we can always add
+		 * a null terminating char later */
+		if (buflen && partial && ((unsigned long)line_len < (STDIO_BUF_SIZE - *partial_buf_len))) {
+			memcpy(partial_buf + *partial_buf_len, buf, line_len);
+			*partial_buf_len += line_len;
+			return 0;
+		}
+
 		/* sd_journal_* doesn't have an option to specify the number of bytes to write in the message, and instead writes the
 		 * entire string. Copying every line doesn't make very much sense, so instead we do this tmp_line_end
 		 * hack to emulate separate strings.
@@ -233,13 +288,14 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
 		char tmp_line_end = buf[line_len];
 		buf[line_len] = '\0';
 
-		_cleanup_free_ char *message = g_strdup_printf("MESSAGE=%s", buf);
-		if (writev_buffer_append_segment(dev_null, &bufv, message, line_len + MESSAGE_EQ_LEN) < 0)
+		ssize_t msg_len = line_len + MESSAGE_EQ_LEN + *partial_buf_len;
+		partial_buf[*partial_buf_len] = '\0';
+		_cleanup_free_ char *message = g_strdup_printf("MESSAGE=%s%s", partial_buf, buf);
+		if (writev_buffer_append_segment(dev_null, &bufv, message, msg_len) < 0)
 			return -1;
 
 		/* Restore state of the buffer */
 		buf[line_len] = tmp_line_end;
-
 
 		if (writev_buffer_append_segment(dev_null, &bufv, container_id_full, cuuid_len + CID_FULL_EQ_LEN) < 0)
 			return -1;
@@ -257,6 +313,9 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
 		if (name && writev_buffer_append_segment(dev_null, &bufv, container_name, name_len + NAME_EQ_LEN) < 0)
 			return -1;
 
+		if (writev_buffer_append_segment(dev_null, &bufv, syslog_identifier, syslog_identifier_len) < 0)
+			return -1;
+
 		/* per docker journald logging format, CONTAINER_PARTIAL_MESSAGE is set to true if it's partial, but otherwise not set. */
 		if (partial && writev_buffer_append_segment(dev_null, &bufv, "CONTAINER_PARTIAL_MESSAGE=true", PARTIAL_MESSAGE_EQ_LEN) < 0)
 			return -1;
@@ -269,6 +328,7 @@ int write_journald(int pipe, char *buf, ssize_t buflen)
 
 		buf += line_len;
 		buflen -= line_len;
+		*partial_buf_len = 0;
 	}
 	return 0;
 }
@@ -497,6 +557,14 @@ static int set_k8s_timestamp(char *buf, ssize_t buflen, const char *pipename)
 	if (len < buflen)
 		err = 0;
 	return err;
+}
+
+/* Force closing any open FD. */
+void close_logging_fds(void)
+{
+	if (k8s_log_fd >= 0)
+		close(k8s_log_fd);
+	k8s_log_fd = -1;
 }
 
 /* reopen all log files */

@@ -1,7 +1,6 @@
 package conmon_test
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -10,28 +9,9 @@ import (
 	"github.com/containers/conmon/runner/conmon"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
+	"golang.org/x/sys/unix"
 )
-
-var (
-	conmonPath  = "/usr/bin/conmon"
-	ctrID       = "abcdefghijklm"
-	validPath   = "/tmp"
-	invalidPath = "/not/a/path"
-)
-
-func getConmonOutputGivenOptions(options ...conmon.ConmonOption) (string, string) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	options = append(options, conmon.WithStdout(&stdout), conmon.WithStderr(&stderr))
-
-	ci, err := conmon.CreateAndExecConmon(options...)
-	Expect(err).To(BeNil())
-
-	ci.Wait()
-
-	return stdout.String(), stderr.String()
-}
 
 var _ = Describe("conmon", func() {
 	Describe("version", func() {
@@ -93,6 +73,18 @@ var _ = Describe("conmon", func() {
 			Expect(err).To(BeNil())
 		})
 		AfterEach(func() {
+			for {
+				// There is a race condition on the directory deletion
+				// as conmon could still be running and creating files
+				// under tmpDir.  Attempt rmdir again if it fails with
+				// ENOTEMPTY.
+				err := os.RemoveAll(tmpDir)
+				if err != nil && errors.Is(err, unix.ENOTEMPTY) {
+					continue
+				}
+				Expect(err).To(BeNil())
+				break
+			}
 			Expect(os.RemoveAll(tmpDir)).To(BeNil())
 			err := os.Chdir(origCwd)
 			Expect(err).To(BeNil())

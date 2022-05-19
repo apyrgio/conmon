@@ -8,11 +8,13 @@
 #include "conn_sock.h"
 #include "cmsg.h"
 #include "cli.h" // opt_bundle_path
+#include "seccomp_notify.h"
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include <unistd.h>
 
 static void resize_winsz(int height, int width);
 static gboolean read_from_ctrl_buffer(int fd, gboolean (*line_process_func)(char *));
@@ -34,6 +36,7 @@ gboolean terminal_accept_cb(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC
 	const char *csname = user_data;
 	if (unlink(csname) < 0)
 		nwarnf("failed to unlink %s", csname);
+
 	close(fd);
 
 	/* We exit if this fails. */
@@ -59,7 +62,9 @@ exit:
 	/* We only have a single fd for both pipes, so we just treat it as
 	 * stdout. stderr is ignored. */
 	mainfd_stdin = console.fd;
-	mainfd_stdout = console.fd;
+	mainfd_stdout = dup(console.fd);
+	if (mainfd_stdout < 0)
+		pexit("Failed to dup console file descriptor");
 
 	/* Now that we have a fd to the tty, make sure we handle any pending data
 	 * that was already buffered. */
@@ -250,8 +255,13 @@ static void setup_fifo(int *fifo_r, int *fifo_w, char *filename, char *error_var
 	if (!fifo_r || !fifo_w)
 		pexitf("setup fifo was passed a NULL pointer");
 
-	if (mkfifo(fifo_path, 0666) == -1)
-		pexitf("Failed to mkfifo at %s", fifo_path);
+	if (mkfifo(fifo_path, 0666) == -1) {
+		if (errno == EEXIST) {
+			unlink(fifo_path);
+			if (mkfifo(fifo_path, 0666) == -1)
+				pexitf("Failed to mkfifo at %s", fifo_path);
+		}
+	}
 
 	if ((*fifo_r = open(fifo_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)) == -1)
 		pexitf("Failed to open %s read half", error_var_name);
