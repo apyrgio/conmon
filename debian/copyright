@@ -13,8 +13,8 @@ Comment:
 
 Files: debian/*
 Copyright: 2019, Nicolas Braud-Santoni <nicoo@debian.org>
-  2019, Jamie Bliss <jamie@ivyleav.es>
-  2019, Birger Schacht <birger@rantanplan.org>
+ 2019, Jamie Bliss <jamie@ivyleav.es>
+ 2019, Birger Schacht <birger@rantanplan.org>
 License: Apache-2.0
 
 Files: src/cmsg.c
