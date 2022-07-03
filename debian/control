@@ -44,3 +44,14 @@ Description: OCI container runtime monitor
  Written in C and designed to have a low memory footprint, conmon is intended to
  be run by a container managing library. Essentially, conmon is the smallest
  daemon a container can have.
+
+Package: golang-github-containers-conmon-dev
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: OCI container runtime monitor 
+ Conmon is a monitoring program and communication tool between a container
+ manager (like podman or CRI-O) and an OCI runtime (like runc or crun) for a
+ single container.
+ .
+ This package contains golang sources that other packages may require for
+ building.
