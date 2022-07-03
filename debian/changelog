@@ -1,3 +1,9 @@
+conmon (2.1.2+ds1-2) unstable; urgency=medium
+
+  * Add golang-github-containers-conmon-dev
+
+ -- Reinhard Tartler <siretart@tauware.de>  Sun, 03 Jul 2022 18:15:11 -0400
+
 conmon (2.1.2+ds1-1) unstable; urgency=medium
 
   * New upstream release
