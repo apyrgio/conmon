@@ -34,6 +34,9 @@ static const char *const JOURNALD_FILE_STRING = "journald";
 /* Max log size for any log file types */
 static int64_t log_size_max = -1;
 
+/* Max total log size for any log file types */
+static int64_t log_global_size_max = -1;
+
 /* k8s log file parameters */
 static int k8s_log_fd = -1;
 static char *k8s_log_path = NULL;
@@ -95,9 +98,10 @@ gboolean logging_is_passthrough(void)
  * (currently just k8s log file), it will also open the log_fd for that specific
  * log file.
  */
-void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuuid_, char *name_, char *tag)
+void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, int64_t log_global_size_max_, char *cuuid_, char *name_, char *tag)
 {
 	log_size_max = log_size_max_;
+	log_global_size_max = log_global_size_max_;
 	if (log_drivers == NULL)
 		nexit("Log driver not provided. Use --log-path");
 	for (int driver = 0; log_drivers[driver]; ++driver) {
@@ -132,22 +136,23 @@ void configure_log_drivers(gchar **log_drivers, int64_t log_size_max_, char *cuu
 		/* Setup some sd_journal_sendv arguments that won't change */
 		container_id_full = g_strdup_printf("CONTAINER_ID_FULL=%s", cuuid);
 		container_id = g_strdup_printf("CONTAINER_ID=%s", short_cuuid);
+
+		/* Priority order of syslog_identifier (in order of precedence) is tag, name, `conmon`. */
+		syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", short_cuuid);
+		syslog_identifier_len = TRUNC_ID_LEN + SYSLOG_IDENTIFIER_EQ_LEN;
+		if (name) {
+			name_len = strlen(name);
+			container_name = g_strdup_printf("CONTAINER_NAME=%s", name);
+
+			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", name);
+			syslog_identifier_len = name_len + SYSLOG_IDENTIFIER_EQ_LEN;
+		}
 		if (tag) {
 			container_tag = g_strdup_printf("CONTAINER_TAG=%s", tag);
 			container_tag_len = strlen(container_tag);
 
 			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", tag);
 			syslog_identifier_len = strlen(syslog_identifier);
-		} else if (name) {
-			/* save the length so we don't have to compute every sd_journal_* call */
-			name_len = strlen(name);
-			container_name = g_strdup_printf("CONTAINER_NAME=%s", name);
-
-			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", name);
-			syslog_identifier_len = name_len + SYSLOG_IDENTIFIER_EQ_LEN;
-		} else {
-			syslog_identifier = g_strdup_printf("SYSLOG_IDENTIFIER=%s", short_cuuid);
-			syslog_identifier_len = TRUNC_ID_LEN + SYSLOG_IDENTIFIER_EQ_LEN;
 		}
 	}
 }
@@ -234,7 +239,7 @@ bool write_to_logs(stdpipe_t pipe, char *buf, ssize_t num_read)
  * otherwise, write with error priority. Partial lines (that don't end in a newline) are buffered
  * between invocations. A 0 buflen argument forces a buffered partial line to be flushed.
  */
-int write_journald(int pipe, char *buf, ssize_t buflen)
+static int write_journald(int pipe, char *buf, ssize_t buflen)
 {
 	static char stdout_partial_buf[STDIO_BUF_SIZE];
 	static size_t stdout_partial_buf_len = 0;
@@ -344,6 +349,7 @@ static int write_k8s_log(stdpipe_t pipe, const char *buf, ssize_t buflen)
 	writev_buffer_t bufv = {0};
 	static int64_t bytes_written = 0;
 	int64_t bytes_to_be_written = 0;
+	static int64_t total_bytes_written = 0;
 
 	/*
 	 * Use the same timestamp for every line of the log in this buffer.
@@ -366,6 +372,10 @@ static int write_k8s_log(stdpipe_t pipe, const char *buf, ssize_t buflen)
 		if (partial) {
 			bytes_to_be_written += 1;
 		}
+
+		/* If the caller specified a global max, enforce it before writing */
+		if (log_global_size_max > 0 && total_bytes_written >= log_global_size_max)
+			break;
 
 		/*
 		 * We re-open the log file if writing out the bytes will exceed the max
@@ -420,6 +430,7 @@ static int write_k8s_log(stdpipe_t pipe, const char *buf, ssize_t buflen)
 		}
 
 		bytes_written += bytes_to_be_written;
+		total_bytes_written += bytes_to_be_written;
 	next:
 		/* Update the head of the buffer remaining to output. */
 		buf += line_len;
