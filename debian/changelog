@@ -1,6 +1,9 @@
 conmon (2.1.2+ds1-1) unstable; urgency=medium
 
   * New upstream release
+  * debian/copyright: normalize with 'cme update dpkg-copyright'
+  * Bump standards-version, no changes needed
+  * debian/upstream/metadata: add bug-database
 
  -- Reinhard Tartler <siretart@tauware.de>  Sun, 03 Jul 2022 16:53:27 -0400
 
