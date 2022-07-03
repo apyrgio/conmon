@@ -2,8 +2,7 @@ Source: conmon
 Section: admin
 Priority: optional
 Maintainer: Podman Packaging Team <team+podman@tracker.debian.org>
-Uploaders: Birger Schacht <birger@rantanplan.org>,
-           Jamie Bliss <jamie@ivyleav.es>,
+Uploaders: Jamie Bliss <jamie@ivyleav.es>,
            Nicolas Braud-Santoni <nicoo@debian.org>,
            Dmitry Smirnov <onlyjob@debian.org>,
            Reinhard Tartler <siretart@tauware.de>,
