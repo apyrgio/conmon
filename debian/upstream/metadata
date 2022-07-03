@@ -1,3 +1,4 @@
 Name: conmon
+Bug-Database: https://github.com/containers/conmon/issues
 Repository: https://github.com/containers/conmon.git
 Repository-Browse: https://github.com/containers/conmon
