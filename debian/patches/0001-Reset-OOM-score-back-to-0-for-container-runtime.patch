@@ -14,10 +14,10 @@ Signed-off-by: Mrunal Patel <mrunalp@gmail.com>
  src/oom.h    | 2 +-
  3 files changed, 6 insertions(+), 6 deletions(-)
 
-diff --git a/src/conmon.c b/src/conmon.c
-index c349d6c..c6bd9f5 100644
---- a/src/conmon.c
-+++ b/src/conmon.c
+Index: conmon/src/conmon.c
+===================================================================
+--- conmon.orig/src/conmon.c
++++ conmon/src/conmon.c
 @@ -41,7 +41,7 @@ int main(int argc, char *argv[])
  
  	process_cli();
@@ -27,7 +27,7 @@ index c349d6c..c6bd9f5 100644
  
  	/* ignoring SIGPIPE prevents conmon from being spuriously killed */
  	signal(SIGPIPE, SIG_IGN);
-@@ -275,6 +275,8 @@ int main(int argc, char *argv[])
+@@ -273,6 +273,8 @@ int main(int argc, char *argv[])
  			}
  		}
  
@@ -36,10 +36,10 @@ index c349d6c..c6bd9f5 100644
  		execv(g_ptr_array_index(runtime_argv, 0), (char **)runtime_argv->pdata);
  		exit(127);
  	}
-diff --git a/src/oom.c b/src/oom.c
-index 5791777..0041a6b 100644
---- a/src/oom.c
-+++ b/src/oom.c
+Index: conmon/src/oom.c
+===================================================================
+--- conmon.orig/src/oom.c
++++ conmon/src/oom.c
 @@ -5,16 +5,14 @@
  #include <string.h>
  #include <unistd.h>
@@ -59,10 +59,10 @@ index 5791777..0041a6b 100644
  		ndebugf("failed to write to /proc/self/oom_score_adj: %s\n", strerror(errno));
  	}
  	close(oom_score_fd);
-diff --git a/src/oom.h b/src/oom.h
-index 28e4178..9408c3b 100644
---- a/src/oom.h
-+++ b/src/oom.h
+Index: conmon/src/oom.h
+===================================================================
+--- conmon.orig/src/oom.h
++++ conmon/src/oom.h
 @@ -1,6 +1,6 @@
  #if !defined(OOM_H)
  #define OOM_H
@@ -71,6 +71,3 @@ index 28e4178..9408c3b 100644
 +void attempt_oom_adjust(const char *const oom_score);
  
  #endif // OOM_H
--- 
-2.20.1
-
