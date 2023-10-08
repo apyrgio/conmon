@@ -1,3 +1,11 @@
+conmon (2.0.25+ds1-1.1+deb11u1) bullseye; urgency=medium
+
+  * Non-maintainer upload.
+  * Backport upstream fix to not hang when forwarding container
+    stdout/stderr with lots of output. (Closes: #1014030)
+
+ -- Dan Nicholson <dbn@endlessos.org>  Wed, 29 Jun 2022 09:35:38 -0600
+
 conmon (2.0.25+ds1-1.1) unstable; urgency=medium
 
   * Non-maintainer upload.
