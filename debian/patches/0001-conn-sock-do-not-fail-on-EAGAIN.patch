@@ -1,0 +1,34 @@
+From 2b873145a85a212f703c9c00db13717ab0204318 Mon Sep 17 00:00:00 2001
+From: Giuseppe Scrivano <gscrivan@redhat.com>
+Date: Tue, 2 Feb 2021 11:35:39 +0100
+Subject: [PATCH] conn_sock: do not fail on EAGAIN
+
+commit 6287bd884d9bf29e76ac877e0c7e6aad04bc24a4 introduced the
+regression.
+
+writes to the attached sockets must be blocking, otherwise the
+write_back_to_remote_consoles() shutdowns the socket when write fails
+with EAGAIN.
+
+I've verified the original issue fixed with commit 62887bd is not
+reintroduced with this patch.
+
+Closes: https://github.com/containers/conmon/issues/236
+
+Signed-off-by: Giuseppe Scrivano <gscrivan@redhat.com>
+---
+ src/conn_sock.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/conn_sock.c b/src/conn_sock.c
+index e569113f..02aee701 100644
+--- a/src/conn_sock.c
++++ b/src/conn_sock.c
+@@ -280,7 +280,6 @@ static gboolean attach_cb(int fd, G_GNUC_UNUSED GIOCondition condition, gpointer
+ 			pexit("Failed to allocate memory");
+ 		}
+ 		init_remote_sock(remote_sock, srcsock);
+-		g_unix_set_fd_nonblocking(new_fd, TRUE, NULL);
+ 		remote_sock->fd = new_fd;
+ 		g_unix_fd_add(remote_sock->fd, G_IO_IN | G_IO_HUP | G_IO_ERR, remote_sock_cb, remote_sock);
+ 		g_ptr_array_add(remote_sock->dest->readers, remote_sock);
