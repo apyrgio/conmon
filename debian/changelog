@@ -1,3 +1,9 @@
+conmon (2.0.25+ds1-1.1fpf) unstable; urgency=medium
+
+  * Backport a fix from v2.0.26, required by Dangerzone 0.6.0
+
+ -- Alex Pyrgiotis <alex.p@freedom.press>  Wed, 24 Jan 2024 15:58:00 -0000
+
 conmon (2.0.25+ds1-1) unstable; urgency=medium
 
   * New upstream release
