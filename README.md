@@ -1,3 +1,6 @@
+_Maintained by Freedom of the Press Foundation for the project Dangerzone.
+For more details, read `fpf/README.md`._
+
 [![Total alerts](https://img.shields.io/lgtm/alerts/g/containers/conmon.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/containers/conmon/alerts/)
 
 # conmon
